@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Vetřelčí stanice – low-poly 3D FPS na palubě ORION-9.">
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/game.css') }}">
+  <script src="{{ url_for('static', path='libs/htmx.min.js') }}" defer></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "{{ url_for('static', path='libs/three.module.js') }}",
+        "three/addons/": "{{ url_for('static', path='libs/addons/') }}"
+      }
+    }
+  </script>
+  <script type="module" src="{{ url_for('static', path='js/main.js') }}"></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1 id="main-title" title="Klikni pro obnovení stránky">ORION-9 // VETŘELČÍ STANICE</h1>
+  </header>
+
+  <main>
+    <section id="login-screen" class="screen">
+      <div class="box login-box game-card">
+        <h2>Identifikace posádky</h2>
+        <p>Nouzový terminál ORION-9 čeká na identifikaci posledního přeživšího.</p>
+        <div class="form-group">
+          <label class="form-label" for="player-name">Jméno člena posádky</label>
+          <input id="player-name" class="input" type="text" maxlength="20"
+                 autocomplete="nickname" placeholder="Zadej své jméno">
+        </div>
+        <button id="join-btn" class="btn btn-primary btn-large" type="button">Přihlásit k terminálu</button>
+        <div id="login-error" class="error-message" role="alert"></div>
+        <div id="version-info" class="version-info">Verze {{ app_version }}</div>
+      </div>
+    </section>
+
+    <section id="menu-screen" class="screen hidden">
+      <div class="game-card">
+        <h2>👽 🚀 Vetřelčí stanice</h2>
+        <div class="menu-grid">
+          <div class="mission-brief">
+            <h3>Rozkaz: vyčistit ORION-9</h3>
+            <p>Čtyři sekce. Čtyři alfa organismy. Jedna cesta ven.</p>
+            <ul>
+              <li>WASD / šipky – pohyb</li>
+              <li>Myš – rozhlížení</li>
+              <li>Levé tlačítko – palba</li>
+              <li>1 / 2 / 3 nebo kolečko – zbraně</li>
+              <li>E – interakce · T – položit věžičku</li>
+              <li>Esc – pauza</li>
+            </ul>
+            <div class="quality-control">
+              <label for="quality-toggle">Kvalita zobrazení</label>
+              <button id="quality-toggle" class="btn btn-outline" type="button"
+                      aria-pressed="true">VYSOKÁ</button>
+            </div>
+            <div class="brightness-control">
+              <label for="brightness-slider">Jas <span id="brightness-value">100 %</span></label>
+              <input id="brightness-slider" type="range" min="50" max="150" value="100"
+                     step="5" aria-label="Jas hry v procentech">
+            </div>
+            <button id="start-btn" class="btn btn-primary btn-large" type="button">Vstoupit na stanici</button>
+          </div>
+          <div class="leaderboard-wrap">
+            <h3>Top 10 přeživších</h3>
+            <div data-leaderboard
+                 hx-get="/partials/leaderboard"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">Načítám záznamy…</div>
+          </div>
+        </div>
+        <div class="version-info">{{ app_name }} · Verze {{ app_version }}</div>
+      </div>
+    </section>
+
+    <section id="loading-screen" class="screen hidden">
+      <div class="game-card">
+        <h2>Připravuji stanici…</h2>
+        <p id="loading-status">Inicializuji taktické systémy</p>
+        <div id="loading-progress" role="progressbar" aria-label="Načítání hry"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="loading-progress-bar"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="game-screen" class="screen hidden" aria-label="Herní plocha">
+      <canvas id="game-canvas" tabindex="0"></canvas>
+      <div id="hud">
+        <div class="hud-panel hud-top-left">
+          <div class="health-label"><span>INTEGRITA</span><strong id="health-value">100 %</strong></div>
+          <div class="health-track"><div id="health-bar"></div></div>
+          <div>SEKCE <span id="level-value">1/4</span></div>
+          <div>CÍLE <span id="remaining-value">0</span></div>
+          <div>PŘEŽIVŠÍ <span id="survivors-value">0/0</span></div>
+        </div>
+        <div class="hud-panel hud-top-right">SKÓRE <strong id="score-value">000000</strong></div>
+        <div id="weapon-panel" class="hud-panel hud-bottom-right">
+          <span id="weapon-value">PULZNÍ PUŠKA M41</span> · <strong id="ammo-value">∞</strong>
+        </div>
+        <div id="oxygen-panel" class="hud-panel hud-oxygen hidden">
+          <div class="health-label"><span>O₂</span><strong id="oxygen-value">20.0 s</strong></div>
+          <div class="oxygen-track"><div id="oxygen-bar"></div></div>
+        </div>
+        <div id="turret-panel" class="hud-panel hud-turret hidden">
+          VĚŽIČKA <strong id="turret-value">30 s</strong>
+        </div>
+        <div id="self-destruct-panel" class="hidden">
+          SEBEDESTRUKCE <strong id="self-destruct-value">60</strong>
+        </div>
+        <div id="context-hint" class="hidden"></div>
+        <pre id="render-stats" class="hidden" aria-hidden="true"></pre>
+        <div id="radar" aria-label="Radar pohybu"></div>
+        <div id="crosshair"></div>
+        <div id="boss-warning" class="hidden"></div>
+        <div id="section-message" class="hidden"></div>
+        <div id="damage-vignette"></div>
+        <div id="heal-flash"></div>
+      </div>
+    </section>
+
+    <section id="pause-screen" class="screen hidden">
+      <div class="game-card">
+        <h2>Systém pozastaven</h2>
+        <p>Pointer lock byl uvolněn. Vetřelci čekají ve tmě.</p>
+        <button id="resume-btn" class="btn btn-primary btn-large" type="button">Pokračovat</button>
+      </div>
+    </section>
+
+    <section id="level-complete-screen" class="screen hidden">
+      <div class="game-card">
+        <h2>Sekce vyčištěna!</h2>
+        <p id="level-complete-copy">Biologické cíle eliminovány.</p>
+        <p>Aktuální skóre: <strong id="level-score">0</strong></p>
+        <button id="next-level-btn" class="btn btn-primary btn-large" type="button">Další sekce</button>
+      </div>
+    </section>
+
+    <section id="gameover-screen" class="screen hidden">
+      <div class="game-card">
+        <h2>Signál posádky ztracen</h2>
+        <p id="gameover-reason">ORION-9 zůstává v karanténě.</p>
+        <p>Dosažené skóre: <strong id="gameover-score">0</strong></p>
+        <p id="gameover-save-status">Odesílám záznam do terminálu…</p>
+        <div class="leaderboard-wrap" data-leaderboard
+             hx-get="/partials/leaderboard" hx-trigger="load" hx-swap="innerHTML"></div>
+        <button id="retry-btn" class="btn btn-primary btn-large" type="button">Hrát znovu</button>
+      </div>
+    </section>
+
+    <section id="victory-screen" class="screen hidden">
+      <div class="game-card">
+        <h2>ORION-9 je čistá</h2>
+        <p>Královna padla. Posádko, právě jsi zachránila stanici.</p>
+        <p>Celkové skóre: <strong id="victory-score">0</strong></p>
+        <p>Časový bonus: <strong id="victory-time-bonus">0</strong></p>
+        <p>Zachránění přeživší: <strong id="victory-survivors">0</strong></p>
+        <p id="victory-save-status">Odesílám vítězný záznam…</p>
+        <div class="leaderboard-wrap" data-leaderboard
+             hx-get="/partials/leaderboard" hx-trigger="load" hx-swap="innerHTML"></div>
+        <button id="victory-retry-btn" class="btn btn-primary btn-large" type="button">Hrát znovu</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="mobile-warning" class="mobile-warning hidden">
+    <div class="game-card">
+      <h2>Terminál není kompatibilní</h2>
+      <p>Hra vyžaduje počítač s klávesnicí a myší.</p>
+    </div>
+  </div>
+</body>
+</html>

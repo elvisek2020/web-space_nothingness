@@ -1,0 +1,20 @@
+{
+  "name": "214_space_nothingness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Single-player 3D FPS v prohlížeči. Hráč jako poslední člen posádky čistí čtyři sekce stanice ORION-9, bojuje s různými druhy vetřelců a ukládá skóre do serverového žebříčku.",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "three": "^0.185.0",
+    "vitest": "^4.1.10"
+  }
+}

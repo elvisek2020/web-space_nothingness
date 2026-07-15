@@ -1,0 +1,22 @@
+/.env
+/.venv/
+/venv/
+/__pycache__/
+**/__pycache__/
+*.py[cod]
+/.pytest_cache/
+/node_modules/
+/playwright-report/
+/test-results/
+/.ruff_cache/
+/.mypy_cache/
+/.coverage
+/htmlcov/
+/.DS_Store
+/data/*
+!/data/.gitkeep
+
+# Local project references; never commit these directories.
+/_DOCS/
+/_backup/
+/_docs/
