@@ -152,11 +152,37 @@ body.game-active .app-header {
     font-size: 0.78rem;
 }
 
+#menu-screen .game-card,
+#gameover-screen .game-card,
+#victory-screen .game-card {
+    width: min(1180px, 98vw);
+    max-width: 1180px;
+    text-align: left;
+}
+
+#menu-screen .game-card > h2,
+#gameover-screen .game-card > h2,
+#victory-screen .game-card > h2 {
+    text-align: center;
+}
+
 .menu-grid {
     display: grid;
-    grid-template-columns: minmax(0, 0.9fr) minmax(280px, 1.1fr);
-    gap: 1rem;
+    grid-template-columns: minmax(280px, 1fr) minmax(720px, 900px);
+    gap: 1.25rem;
+    align-items: start;
     text-align: left;
+}
+
+@media (max-width: 1080px) {
+    .menu-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .leaderboard-wrap {
+        min-width: 0;
+        max-width: none;
+    }
 }
 
 .mission-brief,
@@ -165,6 +191,70 @@ body.game-active .app-header {
     border-radius: var(--radius-sm);
     padding: 1rem;
     background: rgba(0, 0, 0, 0.2);
+}
+
+.leaderboard-wrap {
+    min-width: min(720px, 100%);
+    max-width: 900px;
+    width: 100%;
+}
+
+.leaderboard-wrap h3 {
+    margin: 0 0 0.75rem;
+    color: var(--color-primary);
+    font-size: 0.95rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.leaderboard-panel {
+    width: 100%;
+    overflow-x: auto;
+}
+
+.leaderboard-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+    padding: 0.55rem 0.75rem;
+    vertical-align: middle;
+}
+
+.leaderboard-table .col-rank {
+    width: 3rem;
+    text-align: center;
+}
+
+.leaderboard-table .col-name {
+    width: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.leaderboard-table .col-score {
+    width: 7.5rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.leaderboard-table .col-level {
+    width: 5.5rem;
+    text-align: center;
+}
+
+.leaderboard-table tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.empty-state {
+    margin: 0;
+    color: var(--color-text-light);
+    font-size: 0.88rem;
 }
 
 .mission-brief ul {

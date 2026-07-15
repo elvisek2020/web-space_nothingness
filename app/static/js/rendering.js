@@ -40,6 +40,7 @@ export class RenderingPipeline {
         this.renderer.toneMappingExposure = LIGHTING.exposure;
         this.renderer.shadowMap.enabled = !testMode && this.profile.shadows;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.autoUpdate = false;
         this.renderer.info.autoReset = false;
         this.renderer.setPixelRatio(this.pixelRatio);
         this.renderer.setSize(window.innerWidth, window.innerHeight, false);
@@ -101,6 +102,12 @@ export class RenderingPipeline {
         this.composer.addPass(this.bloomPass);
         this.outputPass = new OutputPass();
         this.composer.addPass(this.outputPass);
+    }
+
+    markShadowsDirty() {
+        if (this.renderer.shadowMap.enabled) {
+            this.renderer.shadowMap.needsUpdate = true;
+        }
     }
 
     setExposure(scale) {

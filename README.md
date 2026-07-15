@@ -1,7 +1,7 @@
 # Vetřelčí stanice
 
-Single-player 3D FPS v prohlížeči. Hráč jako poslední člen posádky čistí čtyři
-sekce stanice ORION-9, bojuje s různými druhy vetřelců a ukládá skóre do
+Single-player 3D FPS v prohlížeči. Hráč jako poslední člen posádky čistí devět
+sektorů stanice ORION-9, bojuje s různými druhy vetřelců a ukládá skóre do
 serverového žebříčku.
 
 Hra používá stylizovanou procedurální grafiku, PBR materiály, generované textury
@@ -9,8 +9,10 @@ a procedurální zvuky. Za běhu nevyžaduje žádné CDN ani externí služby.
 
 ## Funkce
 
-- čtyři samostatné sekce: nákladový prostor, laboratoře, hangár a reaktor,
-- plazivci, stropní lovci, pozemní lovci, plivači a čtyři bossové,
+- devět sektorů ORION-9 (Unity → Zarja → … → reaktorové jádro) s torus chodbou a válcovými moduly,
+- plazivci, stropní lovci, pozemní lovci, plivači, elitní varianty a bossové včetně finále s Královnou,
+- zrak (LOS) a sluch nepřátel — schovávání za přepážkami a alarm výstřely,
+- náhodné spawny nepřátel a pickupů při každém běhu (`?test=1` = deterministický seed),
 - FPS ovládání přes Pointer Lock API a kolize se substeppingem,
 - pulzní puška, brokovnice a plamenomet s perzistentní municí v rámci runu,
 - výbušné sudy, airlock, kyslíkové zóny, sentry věžička a záchrana přeživších,

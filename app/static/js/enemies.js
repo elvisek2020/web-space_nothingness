@@ -1,14 +1,25 @@
 import * as THREE from "three";
 import {
+    ELITE_MULTIPLIERS,
     ENEMY_TYPES,
     GAME_CONFIG,
+    PERCEPTION,
     SPAWN_GRACE_SECONDS,
     SPAWN_SAFE_RADIUS,
     VISUALS,
 } from "./config.js";
 import { isInsideAnyCollider, moveWithSubsteps } from "./collision.js";
 import {
+    alertEnemiesBySound,
+    buildColliderGrid,
+    canEnemySeePlayer,
+} from "./perception.js";
+import {
+    bossGroundY,
     calculateBallisticVelocity,
+    clampBallisticY,
+    clampBossJumpY,
+    limitArcPeak,
     positionOnBallisticArc,
     STALKER_STATES,
 } from "./stalker-physics.js";
@@ -36,15 +47,29 @@ export class EnemyManager {
         this.spawnCursor = 0;
         this.randomSeed = levelConfig.number * 101;
         this.graceRemaining = 0;
+        this.spatial = null;
     }
 
     start() {
         this.started = true;
         this.graceRemaining = SPAWN_GRACE_SECONDS;
-        Object.entries(this.levelConfig.enemies).forEach(([type, count]) => {
-            for (let index = 0; index < count; index += 1) this.spawn(type);
-        });
+        this.spatial = buildColliderGrid(this.world.colliders);
+        this._spawnWave(this.levelConfig.enemies || {}, false);
+        this._spawnWave(this.levelConfig.elite || {}, true);
         this._notifyCount();
+    }
+
+    _spawnWave(enemyMap, elite) {
+        Object.entries(enemyMap).forEach(([type, count]) => {
+            const points = this._pickRandomSpawnPoints(count);
+            for (let index = 0; index < count; index += 1) {
+                this.spawn(type, points[index] || null, elite);
+            }
+        });
+    }
+
+    alertBySound(origin, radius, player) {
+        return alertEnemiesBySound(origin, radius, this.enemies, player.camera.position);
     }
 
     _random() {
@@ -52,15 +77,20 @@ export class EnemyManager {
         return this.randomSeed / 233280;
     }
 
-    spawn(type, requestedPosition = null) {
+    spawn(type, requestedPosition = null, elite = false) {
         const definition = ENEMY_TYPES[type];
         if (!definition) return null;
         const point = requestedPosition || this._pickSpawnPoint(definition);
+        const stats = elite ? ELITE_MULTIPLIERS : null;
+        const color = elite
+            ? new THREE.Color(definition.color).lerp(new THREE.Color(0xffe066), 0.35).getHex()
+            : definition.color;
         const enemy = {
             type,
             definition,
-            group: this._createModel(type, definition),
-            hp: definition.hp,
+            elite,
+            group: this._createModel(type, { ...definition, color }, elite),
+            hp: Math.round(definition.hp * (stats?.hp ?? 1)),
             radius: definition.radius,
             attackTimer: this._random() * definition.attackCooldown,
             jumpTimer: 1 + this._random() * 2,
@@ -70,6 +100,17 @@ export class EnemyManager {
             burnRemaining: 0,
             burnDamage: 0,
             dead: false,
+            aiState: "patrol",
+            loseSightTimer: 0,
+            alertTimer: 0,
+            patrolDirection: new THREE.Vector3(
+                this._random() - 0.5,
+                0,
+                this._random() - 0.5,
+            ).normalize(),
+            damageMultiplier: stats?.damage ?? 1,
+            speedMultiplier: stats?.speed ?? 1,
+            scoreMultiplier: stats?.score ?? 1,
         };
         if (definition.ceilingStalker) {
             enemy.stalkerState = STALKER_STATES.PATROL;
@@ -96,6 +137,26 @@ export class EnemyManager {
         return enemy;
     }
 
+    _pickRandomSpawnPoints(count) {
+        const points = [...(this.world.spawnPoints || [])];
+        for (let index = points.length - 1; index > 0; index -= 1) {
+            const swap = Math.floor(this._random() * (index + 1));
+            [points[index], points[swap]] = [points[swap], points[index]];
+        }
+        const start = this.world.playerStart;
+        const chosen = [];
+        points.forEach((point) => {
+            if (chosen.length >= count) return;
+            const outsideSafe = !start
+                || Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS;
+            const spacingOk = chosen.every(
+                (existing) => Math.hypot(existing.x - point.x, existing.z - point.z) >= 3,
+            );
+            if (outsideSafe && spacingOk) chosen.push(point.clone());
+        });
+        return chosen;
+    }
+
     _pickSpawnPoint(definition) {
         const points = this.world.spawnPoints || [];
         const start = this.world.playerStart;
@@ -120,14 +181,14 @@ export class EnemyManager {
         return new THREE.Vector3(0, 0, this.world.bounds.minZ + 4);
     }
 
-    _createModel(type, definition) {
+    _createModel(type, definition, elite = false) {
         const group = new THREE.Group();
         group.name = definition.label;
         const shell = new THREE.MeshPhysicalMaterial({
             color: definition.color,
             ...VISUALS.materials.alien,
             emissive: definition.color,
-            emissiveIntensity: definition.boss ? 0.42 : 0.12,
+            emissiveIntensity: definition.boss ? 0.42 : (elite ? 0.28 : 0.12),
         });
         const dark = new THREE.MeshPhysicalMaterial({
             color: 0x080c0f,
@@ -339,51 +400,7 @@ export class EnemyManager {
                 this._updateCeilingStalker(enemy, delta, elapsed, player);
                 return;
             }
-            const toPlayer = playerPosition.clone().sub(enemy.group.position);
-            const horizontalDistance = Math.hypot(toPlayer.x, toPlayer.z);
-            const direction = new THREE.Vector3(toPlayer.x, 0, toPlayer.z).normalize();
-
-            const preferredRange = enemy.definition.ranged ? 8 : enemy.definition.attackRange * 0.8;
-            if (horizontalDistance > preferredRange) {
-                const speedBoost = enemy.definition.jumper && enemy.jumpTimer < 0 ? 1.9 : 1;
-                const movement = direction.multiplyScalar(enemy.definition.speed * speedBoost * delta);
-                this._moveEnemy(enemy, movement);
-            } else if (enemy.definition.ranged && horizontalDistance < 5) {
-                this._moveEnemy(enemy, direction.multiplyScalar(-enemy.definition.speed * 0.45 * delta));
-            }
-
-            enemy.group.lookAt(playerPosition.x, enemy.group.position.y, playerPosition.z);
-            this._animate(enemy, elapsed);
-
-            if (enemy.definition.jumper && enemy.jumpTimer < 0) {
-                enemy.jumpTimer = 2.4 + this._random() * 2;
-            }
-            const jumping = enemy.definition.jumper && enemy.jumpTimer > 1.9;
-            const baseY = enemy.radius * 0.72;
-            enemy.group.position.y = baseY
-                + (jumping ? Math.sin((enemy.jumpTimer - 1.9) * Math.PI * 2) * 1.1 : 0);
-
-            if (enemy.attackTimer <= 0) {
-                if (enemy.definition.ranged && horizontalDistance <= enemy.definition.attackRange) {
-                    this._fireAcid(enemy, playerPosition);
-                    enemy.attackTimer = enemy.definition.attackCooldown;
-                } else if (horizontalDistance <= enemy.definition.attackRange) {
-                    player.damage(enemy.definition.damage);
-                    enemy.attackTimer = enemy.definition.attackCooldown;
-                }
-            }
-
-            if (enemy.definition.summons) {
-                enemy.summonTimer -= delta;
-                if (enemy.summonTimer <= 0 && this.enemies.filter((item) => !item.dead).length < 9) {
-                    for (let index = 0; index < 2; index += 1) {
-                        const offset = new THREE.Vector3((index ? 1 : -1) * 2.2, 0, 1.5);
-                        this.spawn("crawler", enemy.group.position.clone().add(offset));
-                    }
-                    enemy.summonTimer = 8;
-                    this.audio?.alienCry(true);
-                }
-            }
+            this._updateGroundEnemy(enemy, delta, elapsed, player);
         });
 
         this._collidePlayerProjectiles(player);
@@ -396,6 +413,119 @@ export class EnemyManager {
         if (this.started && this.bossDefeated && living.length === 0 && !this.completed) {
             this.completed = true;
             this.callbacks.onComplete?.();
+        }
+    }
+
+    _updateGroundEnemy(enemy, delta, elapsed, player) {
+        const playerPosition = player.camera.position;
+        const floorY = bossGroundY(enemy.radius, this.world.floorY ?? 0);
+        const ceilingY = this.world.ceilingY ?? 6.85;
+        const seesPlayer = canEnemySeePlayer(
+            enemy,
+            player,
+            this.world.colliders,
+            this.spatial,
+        );
+        if (seesPlayer) {
+            enemy.aiState = "chase";
+            enemy.lastKnownPosition = playerPosition.clone();
+            enemy.loseSightTimer = PERCEPTION.loseSightSeconds;
+        } else if (enemy.alertTimer > 0) {
+            enemy.alertTimer -= delta;
+            enemy.aiState = "investigate";
+        } else if (enemy.loseSightTimer > 0) {
+            enemy.loseSightTimer -= delta;
+            enemy.aiState = "investigate";
+        } else if (enemy.aiState !== "patrol") {
+            enemy.aiState = "patrol";
+        }
+
+        const engaged = enemy.aiState === "chase" || enemy.aiState === "investigate";
+        const target = engaged && enemy.lastKnownPosition
+            ? enemy.lastKnownPosition
+            : null;
+        const toTarget = target
+            ? new THREE.Vector3(
+                target.x - enemy.group.position.x,
+                0,
+                target.z - enemy.group.position.z,
+            )
+            : enemy.patrolDirection.clone();
+        const horizontalDistance = Math.hypot(toTarget.x, toTarget.z);
+        const direction = horizontalDistance > 0.01
+            ? toTarget.normalize()
+            : enemy.patrolDirection;
+
+        if (enemy.aiState === "patrol") {
+            this._moveEnemy(
+                enemy,
+                enemy.patrolDirection.clone().multiplyScalar(enemy.definition.speed * 0.35 * delta),
+            );
+            if (this._random() < delta * 0.08) {
+                enemy.patrolDirection.set(
+                    this._random() - 0.5,
+                    0,
+                    this._random() - 0.5,
+                ).normalize();
+            }
+        } else {
+            const preferredRange = enemy.definition.ranged ? 8 : enemy.definition.attackRange * 0.8;
+            const speedBoost = enemy.definition.jumper && enemy.jumpTimer < 0 ? 1.9 : 1;
+            const speed = enemy.definition.speed * enemy.speedMultiplier * speedBoost;
+            if (horizontalDistance > preferredRange || enemy.aiState === "investigate") {
+                this._moveEnemy(enemy, direction.multiplyScalar(speed * delta));
+            } else if (enemy.definition.ranged && horizontalDistance < 5) {
+                this._moveEnemy(enemy, direction.multiplyScalar(-speed * 0.45 * delta));
+            }
+            if (
+                enemy.aiState === "investigate"
+                && horizontalDistance < 1.2
+                && enemy.loseSightTimer <= 0
+                && enemy.alertTimer <= 0
+            ) {
+                enemy.aiState = "patrol";
+            }
+        }
+
+        if (engaged) {
+            enemy.group.lookAt(playerPosition.x, enemy.group.position.y, playerPosition.z);
+        }
+        this._animate(enemy, elapsed);
+
+        if (enemy.definition.jumper && enemy.jumpTimer < 0) {
+            enemy.jumpTimer = 2.4 + this._random() * 2;
+        }
+        const jumping = engaged && enemy.definition.jumper && enemy.jumpTimer > 1.9;
+        const jumpPhase = (enemy.jumpTimer - 1.9);
+        enemy.group.position.y = jumping
+            ? clampBossJumpY(floorY, jumpPhase, 1.1, floorY, ceilingY, enemy.radius)
+            : floorY;
+
+        const attackDistance = Math.hypot(
+            playerPosition.x - enemy.group.position.x,
+            playerPosition.z - enemy.group.position.z,
+        );
+        if (engaged && enemy.attackTimer <= 0) {
+            const damage = Math.round(enemy.definition.damage * enemy.damageMultiplier);
+            if (enemy.definition.ranged && attackDistance <= enemy.definition.attackRange) {
+                this._fireAcid(enemy, playerPosition);
+                enemy.attackTimer = enemy.definition.attackCooldown;
+            } else if (attackDistance <= enemy.definition.attackRange) {
+                player.damage(damage);
+                enemy.attackTimer = enemy.definition.attackCooldown;
+            }
+        }
+
+        if (enemy.definition.summons && engaged) {
+            enemy.summonTimer -= delta;
+            if (enemy.summonTimer <= 0 && this.enemies.filter((item) => !item.dead).length < 12) {
+                for (let index = 0; index < 2; index += 1) {
+                    const offset = new THREE.Vector3((index ? 1 : -1) * 2.2, 0, 1.5);
+                    this.spawn("crawler", enemy.group.position.clone().add(offset));
+                }
+                enemy.summonTimer = 8;
+                this.audio?.alienCry(true);
+            }
         }
     }
 
@@ -416,7 +546,8 @@ export class EnemyManager {
     _updateCeilingStalker(enemy, delta, elapsed, player) {
         const definition = enemy.definition;
         const playerPosition = player.camera.position;
-        const floorY = enemy.radius * 0.72;
+        const floorY = bossGroundY(enemy.radius, this.world.floorY ?? 0);
+        const ceilingY = this.world.ceilingY ?? definition.ceilingY;
         const model = enemy.group.userData.model;
         const toPlayer = playerPosition.clone().sub(enemy.group.position);
         const horizontalDistance = Math.hypot(toPlayer.x, toPlayer.z);
@@ -446,7 +577,13 @@ export class EnemyManager {
                 this.audio?.ceilingScratch(enemy.group.position);
                 enemy.soundTimer = 1.2 + this._random() * 1.6;
             }
-            if (horizontalDistance <= definition.detectionRange && enemy.stalkerTimer <= 0) {
+            if (
+                (
+                    horizontalDistance <= definition.detectionRange
+                    && canEnemySeePlayer(enemy, player, this.world.colliders, this.spatial)
+                )
+                || enemy.alertTimer > 0
+            ) {
                 enemy.stalkerState = STALKER_STATES.WARNING;
                 enemy.stalkerTimer = definition.warningDuration;
                 this.audio?.ceilingScreech(enemy.group.position);
@@ -466,9 +603,16 @@ export class EnemyManager {
                 enemy.stalkerState = STALKER_STATES.JUMP;
                 enemy.jumpElapsed = 0;
                 enemy.jumpStart = enemy.group.position.clone();
+                const limited = limitArcPeak(
+                    enemy.jumpStart.y,
+                    floorY,
+                    definition.jumpDuration,
+                    definition.jumpForce,
+                    ceilingY,
+                );
                 enemy.jumpTarget = new THREE.Vector3(
                     playerPosition.x,
-                    floorY,
+                    limited.adjustedTargetY,
                     playerPosition.z,
                 );
                 const velocity = calculateBallisticVelocity(
@@ -501,7 +645,7 @@ export class EnemyManager {
                     next.z - enemy.group.position.z,
                 ),
             );
-            enemy.group.position.y = Math.max(floorY, Math.min(definition.ceilingY, next.y));
+            enemy.group.position.y = clampBallisticY(next.y, floorY, ceilingY, enemy.radius);
             model.rotation.z = Math.PI * (
                 1 - enemy.jumpElapsed / definition.jumpDuration
             );
@@ -800,9 +944,29 @@ export class EnemyManager {
 
     _spawnBoss() {
         this.bossSpawned = true;
-        const point = new THREE.Vector3(0, 0, -this.levelConfig.size[1] / 2 + 7);
-        this.spawn(this.levelConfig.boss, point);
-        this.callbacks.onBoss?.(ENEMY_TYPES[this.levelConfig.boss].label);
+        const arena = this.world.bossArena;
+        const point = arena
+            ? new THREE.Vector3(arena.center.x, 0, arena.center.z)
+            : new THREE.Vector3(0, 0, 0);
+        const boss = this.levelConfig.boss;
+        if (boss === "alphaPack") {
+            for (let index = 0; index < 3; index += 1) {
+                this.spawn("alpha", point.clone().add(new THREE.Vector3((index - 1) * 3.2, 0, 1.5)));
+            }
+            this.callbacks.onBoss?.("Alfa smečka");
+        } else if (boss === "praetorianDuo") {
+            this.spawn("praetorian", point.clone().add(new THREE.Vector3(-2.8, 0, 0)));
+            this.spawn("praetorian", point.clone().add(new THREE.Vector3(2.8, 0, 0)));
+            this.callbacks.onBoss?.("Dvojice pretoriánů");
+        } else if (boss === "reactorGuardian") {
+            this.spawn("mutant", point.clone());
+            this.spawn("hunter", point.clone().add(new THREE.Vector3(3.5, 0, -2.5)));
+            this.spawn("hunter", point.clone().add(new THREE.Vector3(-3.5, 0, -2.5)));
+            this.callbacks.onBoss?.("Strážce reaktoru");
+        } else {
+            this.spawn(boss, point);
+            this.callbacks.onBoss?.(ENEMY_TYPES[boss]?.label || boss);
+        }
         this.audio?.bossAlarm();
     }
 

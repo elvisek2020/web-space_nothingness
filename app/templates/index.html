@@ -45,7 +45,7 @@
         <div class="menu-grid">
           <div class="mission-brief">
             <h3>Rozkaz: vyčistit ORION-9</h3>
-            <p>Čtyři sekce. Čtyři alfa organismy. Jedna cesta ven.</p>
+            <p>Devět sektorů. Devět bossů. Jedna cesta ven.</p>
             <ul>
               <li>WASD / šipky – pohyb</li>
               <li>Myš – rozhlížení</li>
@@ -95,7 +95,7 @@
         <div class="hud-panel hud-top-left">
           <div class="health-label"><span>INTEGRITA</span><strong id="health-value">100 %</strong></div>
           <div class="health-track"><div id="health-bar"></div></div>
-          <div>SEKCE <span id="level-value">1/4</span></div>
+          <div>SEKCE <span id="level-value">1/9</span></div>
           <div>CÍLE <span id="remaining-value">0</span></div>
           <div>PŘEŽIVŠÍ <span id="survivors-value">0/0</span></div>
         </div>
@@ -147,8 +147,13 @@
         <p id="gameover-reason">ORION-9 zůstává v karanténě.</p>
         <p>Dosažené skóre: <strong id="gameover-score">0</strong></p>
         <p id="gameover-save-status">Odesílám záznam do terminálu…</p>
-        <div class="leaderboard-wrap" data-leaderboard
-             hx-get="/partials/leaderboard" hx-trigger="load" hx-swap="innerHTML"></div>
+        <div class="leaderboard-wrap">
+          <h3>Top 10 přeživších</h3>
+          <div data-leaderboard
+               hx-get="/partials/leaderboard"
+               hx-trigger="load"
+               hx-swap="innerHTML">Načítám záznamy…</div>
+        </div>
         <button id="retry-btn" class="btn btn-primary btn-large" type="button">Hrát znovu</button>
       </div>
     </section>
@@ -161,8 +166,13 @@
         <p>Časový bonus: <strong id="victory-time-bonus">0</strong></p>
         <p>Zachránění přeživší: <strong id="victory-survivors">0</strong></p>
         <p id="victory-save-status">Odesílám vítězný záznam…</p>
-        <div class="leaderboard-wrap" data-leaderboard
-             hx-get="/partials/leaderboard" hx-trigger="load" hx-swap="innerHTML"></div>
+        <div class="leaderboard-wrap">
+          <h3>Top 10 přeživších</h3>
+          <div data-leaderboard
+               hx-get="/partials/leaderboard"
+               hx-trigger="load"
+               hx-swap="innerHTML">Načítám záznamy…</div>
+        </div>
         <button id="victory-retry-btn" class="btn btn-primary btn-large" type="button">Hrát znovu</button>
       </div>
     </section>

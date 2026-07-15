@@ -4,6 +4,9 @@ export class GameAudio {
         this.master = null;
         this.ambient = null;
         this.enabled = true;
+        this.activeVoices = 0;
+        this.maxVoices = 8;
+        this.weaponBuffers = {};
     }
 
     async unlock() {
@@ -33,7 +36,8 @@ export class GameAudio {
     }
 
     _tone(frequency, duration, options = {}) {
-        if (!this.context || !this.enabled) return;
+        if (!this.context || !this.enabled || this.activeVoices >= this.maxVoices) return;
+        this.activeVoices += 1;
         const now = this.context.currentTime;
         const oscillator = this.context.createOscillator();
         const gain = this.context.createGain();
@@ -51,10 +55,14 @@ export class GameAudio {
         oscillator.connect(filter).connect(gain).connect(this.master);
         oscillator.start(now);
         oscillator.stop(now + duration);
+        oscillator.onended = () => {
+            this.activeVoices = Math.max(0, this.activeVoices - 1);
+        };
     }
 
     _noise(duration, options = {}) {
-        if (!this.context || !this.enabled) return;
+        if (!this.context || !this.enabled || this.activeVoices >= this.maxVoices) return;
+        this.activeVoices += 1;
         const frames = Math.ceil(this.context.sampleRate * duration);
         const buffer = this.context.createBuffer(1, frames, this.context.sampleRate);
         const data = buffer.getChannelData(0);
@@ -74,6 +82,9 @@ export class GameAudio {
             : this.master;
         source.connect(filter).connect(gain).connect(destination);
         source.start();
+        source.onended = () => {
+            this.activeVoices = Math.max(0, this.activeVoices - 1);
+        };
     }
 
     _createPanner(position) {

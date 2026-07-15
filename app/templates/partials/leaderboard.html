@@ -3,19 +3,19 @@
   <table class="table leaderboard-table">
     <thead>
       <tr>
-        <th scope="col">#</th>
-        <th scope="col">Posádka</th>
-        <th scope="col">Skóre</th>
-        <th scope="col">Sekce</th>
+        <th scope="col" class="col-rank">#</th>
+        <th scope="col" class="col-name">Posádka</th>
+        <th scope="col" class="col-score">Skóre</th>
+        <th scope="col" class="col-level">Sekce</th>
       </tr>
     </thead>
     <tbody>
       {% for item in scores %}
       <tr>
-        <td>{{ loop.index }}</td>
-        <td>{{ item.name }}</td>
-        <td>{{ item.score }}</td>
-        <td>{{ item.level }}/4</td>
+        <td class="col-rank">{{ loop.index }}</td>
+        <td class="col-name" title="{{ item.name }}">{{ item.name }}</td>
+        <td class="col-score">{{ item.score }}</td>
+        <td class="col-level">{{ item.level }}/9</td>
       </tr>
       {% endfor %}
     </tbody>

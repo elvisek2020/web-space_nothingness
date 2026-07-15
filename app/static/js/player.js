@@ -282,6 +282,10 @@ export class Player {
         if (this.activeWeapon !== "flamethrower" || this.random() < 0.22) {
             this._spawnMuzzleSmoke();
         }
+        this.callbacks.onWeaponSound?.(
+            this.camera.position,
+            definition.soundRadius ?? 14,
+        );
         this.audio?.weaponShot(this.activeWeapon);
 
         for (let index = 0; index < definition.pellets; index += 1) {

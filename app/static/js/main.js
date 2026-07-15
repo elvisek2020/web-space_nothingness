@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import {
     FEATURES,
+    FIXED_TEST_SEED,
     GAME_CONFIG,
     LEVEL_CONFIGS,
+    LEVEL_COUNT,
     LIGHTING,
     SPAWN_GRACE_SECONDS,
     SPAWN_SAFE_RADIUS,
@@ -13,7 +15,7 @@ import { BarrelManager } from "./barrels.js";
 import { isInsideAnyCollider } from "./collision.js";
 import { EnemyManager } from "./enemies.js";
 import { Hud } from "./hud.js";
-import { LevelBuilder } from "./levels.js";
+import { LevelBuilder, seededRandom } from "./levels.js";
 import { PickupManager } from "./pickups.js";
 import { Player } from "./player.js";
 import { RenderingPipeline } from "./rendering.js";
@@ -69,14 +71,6 @@ function runtimeQuality() {
     return TEST_MODE ? "low" : quality;
 }
 
-function seededRandom(seed) {
-    let value = seed % 2147483647;
-    return () => {
-        value = value * 16807 % 2147483647;
-        return (value - 1) / 2147483646;
-    };
-}
-
 export function showScreen(screenId) {
     document.querySelectorAll(".screen").forEach((screen) => screen.classList.add("hidden"));
     document.getElementById(screenId)?.classList.remove("hidden");
@@ -104,6 +98,9 @@ function initRenderer() {
         onEmptyWeapon: () => hud.showMessage("MUNICE VYČERPÁNA", 850),
         onInteract: () => useInteraction(),
         onTurret: () => placeTurret(),
+        onWeaponSound: (position, radius) => {
+            enemyManager?.alertBySound(position, radius, player);
+        },
     });
     if (TEST_MODE) player.random = seededRandom(42);
     window.addEventListener("resize", resizeRenderer);
@@ -145,15 +142,22 @@ function clearLevel() {
     document.body.classList.remove("self-destruct-active");
 }
 
+function createLevelSeed(index) {
+    if (TEST_MODE) return FIXED_TEST_SEED + index;
+    return (Date.now() ^ Math.floor(Math.random() * 1e9)) + index * 997;
+}
+
 function setupLevel(index, freshRun = false, spawnEnemies = !TEST_MODE) {
     clearLevel();
     levelIndex = index;
     const config = LEVEL_CONFIGS[levelIndex];
+    const levelSeed = createLevelSeed(index);
     levelBuilder = new LevelBuilder(scene, config, runtimeQuality(), {
-        seed: TEST_MODE ? 42 + levelIndex : undefined,
+        seed: levelSeed,
         debug: DEBUG_MODE,
     });
     world = levelBuilder.build();
+    rendering?.markShadowsDirty();
     applyBrightness();
 
     if (freshRun) {
@@ -183,6 +187,7 @@ function setupLevel(index, freshRun = false, spawnEnemies = !TEST_MODE) {
         onBoss: (name) => hud.showBoss(name),
         onComplete: () => completeLevel(),
     });
+    enemyManager.levelSeed = levelSeed;
     if (spawnEnemies) enemyManager.start();
     else hud.setRemaining(0);
 
@@ -606,7 +611,7 @@ function exposeTestApi() {
         getHP: () => player.hp,
         setGodmode: (enabled) => player.setGodmode(enabled),
         async skipToLevel(number, options = {}) {
-            if (number < 1 || number > 4) throw new Error("Level must be 1-4");
+            if (number < 1 || number > LEVEL_COUNT) throw new Error(`Level must be 1-${LEVEL_COUNT}`);
             await ensureTestGame();
             setupLevel(number - 1, false, Boolean(options.spawnEnemies));
             sessionActive = true;
@@ -626,7 +631,18 @@ function exposeTestApi() {
             playerStart: world
                 ? { x: world.playerStart.x, z: world.playerStart.z }
                 : null,
+            seed: world?.seed ?? null,
+            levelCount: LEVEL_COUNT,
         }),
+        getSpawnSeed: () => world?.seed ?? null,
+        getSpawnPositions: () => (enemyManager?.enemies || [])
+            .filter((enemy) => !enemy.dead)
+            .map((enemy) => ({
+                type: enemy.type,
+                x: enemy.group.position.x,
+                z: enemy.group.position.z,
+            })),
+        getLevelCount: () => LEVEL_COUNT,
         getEnemies: () => (enemyManager?.enemies || [])
             .filter((enemy) => !enemy.dead)
             .map((enemy) => {

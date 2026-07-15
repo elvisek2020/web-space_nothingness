@@ -1,4 +1,4 @@
-import { GAME_CONFIG } from "./config.js";
+import { GAME_CONFIG, LEVEL_COUNT } from "./config.js";
 
 export class Hud {
     constructor(audio) {
@@ -26,25 +26,40 @@ export class Hud {
         this.healFlash = document.getElementById("heal-flash");
         this.lastBeep = 0;
         this.messageTimer = null;
+        this._lastScore = null;
+        this._lastRemaining = null;
+        this._lastLevelLabel = null;
     }
 
     setHealth(hp) {
         const value = Math.max(0, Math.min(100, hp));
-        this.healthValue.textContent = `${Math.ceil(value)} %`;
+        const label = `${Math.ceil(value)} %`;
+        if (this.healthValue.textContent !== label) {
+            this.healthValue.textContent = label;
+        }
         this.healthBar.style.width = `${value}%`;
         this.healthBar.style.backgroundColor = value > 55 ? "#43ff81" : value > 25 ? "#ffad32" : "#ff4057";
     }
 
     setScore(score) {
-        this.scoreValue.textContent = String(score).padStart(6, "0");
+        const label = String(score).padStart(6, "0");
+        if (this._lastScore === label) return;
+        this._lastScore = label;
+        this.scoreValue.textContent = label;
     }
 
     setLevel(number, name) {
-        this.levelValue.textContent = `${number}/4 · ${name}`;
+        const label = `${number}/${LEVEL_COUNT} · ${name}`;
+        if (this._lastLevelLabel === label) return;
+        this._lastLevelLabel = label;
+        this.levelValue.textContent = label;
     }
 
     setRemaining(count) {
-        this.remainingValue.textContent = String(count);
+        const label = String(count);
+        if (this._lastRemaining === label) return;
+        this._lastRemaining = label;
+        this.remainingValue.textContent = label;
     }
 
     setWeapon(label, ammo) {

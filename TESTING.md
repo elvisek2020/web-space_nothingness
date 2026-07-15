@@ -44,15 +44,18 @@ npm run test:e2e
 - Kovové povrchy mají jemné environment odlesky a nejsou ploché ani plastové.
 - Smrt vetřelce vytvoří fragmenty a částice; sud vytvoří kouř a rázovou vlnu.
 - Kvalita a jas zůstanou po obnovení stránky uložené.
-- Hráč ani nepřátelé neprojdou zdmi, bednami, lodí, reaktorem ani terminály.
-- V každé sekci jsou počáteční nepřátelé nejméně 15 jednotek od startu a první
+- Hráč ani nepřátelé neprojdou zdmi, bednami, lodí, reaktorem, modulem ani přepážkou tunelu.
+- V každé ze 9 sekcí jsou počáteční nepřátelé nejméně 15 jednotek od startu a první
   3 sekundy neaggrují ani neútočí; platí také po restartu a „HRÁT ZNOVU“.
+- Nepřítel za přepážkou bez LOS neaggruje; výstřel v doslechu ho přitáhne.
+- Spawny se liší mezi běhy; v `?test=1` jsou deterministické (`getSpawnSeed()`).
+- HUD zobrazuje `SEKCE x/9`.
 - Stropní lovec začíná hlavou dolů na stropě, varuje skřekem, dopadne na
   podlahu, několik sekund útočí a poté se vrátí. Na radaru nahoře bliká.
 - Škrábání stropního lovce je přes HRTF slyšet z jeho skutečné pozice nad hráčem.
 - Podlahové spáry, rošty a úniková trasa nejsou emissive; hlavní světlo vychází
   ze stropních fixture a startovní výklenek má vlastní stropní světlo.
-- Brokovnice v levelu 2 a plamenomet v levelu 3 správně spotřebovávají munici.
+- Brokovnice v levelu 2 a plamenomet v levelu 4 správně spotřebovávají munici.
 - Sud poškodí okolní cíle a odpálí sousední sudy.
 - `E` aktivuje airlock jen jednou; O₂ zóna odečítá kyslík a po vyčerpání HP.
 - `T` položí nejvýše jednu získanou věžičku; věžička po čase nebo munici zmizí.

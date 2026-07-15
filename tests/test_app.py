@@ -95,8 +95,12 @@ def test_database_contains_only_accepted_scores(client: TestClient):
     ).status_code == 422
     assert client.post(
         "/api/scores",
-        json={"name": "Ash", "score": 2, "level": 5},
+        json={"name": "Ash", "score": 2, "level": 10},
     ).status_code == 422
+    assert client.post(
+        "/api/scores",
+        json={"name": "Ripley", "score": 900, "level": 9},
+    ).status_code == 201
 
 
 def test_leaderboard_is_sorted_limited_and_escaped(client: TestClient):

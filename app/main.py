@@ -62,7 +62,7 @@ class ScoreCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=20)
     score: int = Field(ge=0)
-    level: int = Field(ge=1, le=4)
+    level: int = Field(ge=1, le=9)
 
     @field_validator("name")
     @classmethod

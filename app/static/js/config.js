@@ -1,5 +1,10 @@
+export const LEVEL_COUNT = 9;
+export const FIXED_TEST_SEED = 424242;
 export const SPAWN_SAFE_RADIUS = 15;
 export const SPAWN_GRACE_SECONDS = 3;
+export const MIN_CEILING = 6.5;
+export const FLOOR_Y = 0;
+export const CEILING_Y = MIN_CEILING + 0.35;
 
 export const GAME_CONFIG = Object.freeze({
     player: {
@@ -22,6 +27,13 @@ export const GAME_CONFIG = Object.freeze({
         collisionSubstep: 0.12,
     },
     scoreMax: 1_000_000,
+});
+
+export const PERCEPTION = Object.freeze({
+    loseSightSeconds: 3,
+    investigateSpeedMultiplier: 0.85,
+    soundAlertDuration: 6,
+    rayStep: 0.45,
 });
 
 export const LIGHTING = Object.freeze({
@@ -65,7 +77,7 @@ export const LIGHTING = Object.freeze({
 export const VISUALS = Object.freeze({
     quality: {
         high: {
-            pixelRatio: 1.5,
+            pixelRatio: 2,
             textureSize: 1024,
             anisotropy: 8,
             msaaSamples: 4,
@@ -76,7 +88,7 @@ export const VISUALS = Object.freeze({
             shadows: true,
         },
         low: {
-            pixelRatio: 0.85,
+            pixelRatio: 1.25,
             textureSize: 512,
             anisotropy: 2,
             msaaSamples: 0,
@@ -129,6 +141,13 @@ export const VISUALS = Object.freeze({
     },
 });
 
+export const ELITE_MULTIPLIERS = Object.freeze({
+    hp: 1.35,
+    damage: 1.2,
+    speed: 1.08,
+    score: 1.5,
+});
+
 export const WEAPONS = Object.freeze({
     pulse: {
         key: "Digit1",
@@ -142,6 +161,7 @@ export const WEAPONS = Object.freeze({
         color: 0x55fff1,
         pellets: 1,
         spread: 0,
+        soundRadius: 14,
     },
     shotgun: {
         key: "Digit2",
@@ -156,6 +176,7 @@ export const WEAPONS = Object.freeze({
         color: 0xffc65a,
         pellets: 8,
         spread: 0.1,
+        soundRadius: 28,
     },
     flamethrower: {
         key: "Digit3",
@@ -173,13 +194,14 @@ export const WEAPONS = Object.freeze({
         ammoCost: 1,
         burnDamage: 7,
         burnDuration: 3,
+        soundRadius: 10,
     },
 });
 
 export const FEATURES = Object.freeze({
     barrels: {
         hp: 34,
-        countByLevel: [3, 4, 4, 5],
+        countByLevel: [3, 3, 4, 4, 4, 5, 5, 5, 6],
         explosionRadius: 6,
         chainRadius: 7,
         damage: 85,
@@ -210,7 +232,7 @@ export const FEATURES = Object.freeze({
     survivors: {
         rescueRadius: 1.4,
         score: 250,
-        countByLevel: [1, 1, 2, 2],
+        countByLevel: [0, 0, 1, 1, 1, 1, 2, 2, 0],
     },
     selfDestruct: {
         duration: 60,
@@ -219,6 +241,12 @@ export const FEATURES = Object.freeze({
         finalCrawlers: 5,
     },
 });
+
+const baseVision = {
+    visionRange: 22,
+    visionAngleDeg: 110,
+    hearingRange: 16,
+};
 
 export const ENEMY_TYPES = Object.freeze({
     crawler: {
@@ -231,6 +259,7 @@ export const ENEMY_TYPES = Object.freeze({
         score: 10,
         radius: 0.75,
         color: 0x59c45a,
+        ...baseVision,
     },
     CEILING_STALKER: {
         label: "Stropní lovec",
@@ -248,11 +277,14 @@ export const ENEMY_TYPES = Object.freeze({
         groundDuration: 4.5,
         returnDuration: 1.2,
         returnCooldown: 3.2,
-        ceilingY: 4.45,
+        ceilingY: CEILING_Y - 1.9,
         score: 25,
         radius: 0.82,
         color: 0x50d8c6,
         ceilingStalker: true,
+        visionRange: 18,
+        visionAngleDeg: 130,
+        hearingRange: 20,
     },
     hunter: {
         label: "Lovec",
@@ -264,6 +296,9 @@ export const ENEMY_TYPES = Object.freeze({
         score: 30,
         radius: 0.82,
         color: 0xb86cff,
+        visionRange: 24,
+        visionAngleDeg: 105,
+        hearingRange: 18,
     },
     spitter: {
         label: "Plivač",
@@ -276,6 +311,9 @@ export const ENEMY_TYPES = Object.freeze({
         radius: 0.9,
         color: 0xd4ef48,
         ranged: true,
+        visionRange: 26,
+        visionAngleDeg: 95,
+        hearingRange: 14,
     },
     alpha: {
         label: "Alfa plazivec",
@@ -289,6 +327,9 @@ export const ENEMY_TYPES = Object.freeze({
         color: 0xff6a3d,
         boss: true,
         jumper: true,
+        visionRange: 28,
+        visionAngleDeg: 120,
+        hearingRange: 22,
     },
     praetorian: {
         label: "Pretorián",
@@ -302,6 +343,9 @@ export const ENEMY_TYPES = Object.freeze({
         color: 0xf14566,
         boss: true,
         jumper: true,
+        visionRange: 30,
+        visionAngleDeg: 115,
+        hearingRange: 24,
     },
     mutant: {
         label: "Zmutovaný plivač",
@@ -317,6 +361,9 @@ export const ENEMY_TYPES = Object.freeze({
         ranged: true,
         jumper: true,
         burst: 3,
+        visionRange: 32,
+        visionAngleDeg: 100,
+        hearingRange: 20,
     },
     queen: {
         label: "Královna",
@@ -333,18 +380,47 @@ export const ENEMY_TYPES = Object.freeze({
         jumper: true,
         burst: 3,
         summons: true,
+        visionRange: 34,
+        visionAngleDeg: 110,
+        hearingRange: 26,
+    },
+    motherStalker: {
+        label: "Matka lovců",
+        hp: 980,
+        speed: 3.4,
+        patrolSpeed: 2.6,
+        damage: 22,
+        impactDamage: 28,
+        attackRange: 1.8,
+        attackCooldown: 0.8,
+        detectionRange: 18,
+        warningDuration: 0.55,
+        jumpDuration: 0.72,
+        jumpForce: 16,
+        groundDuration: 5,
+        returnDuration: 1.1,
+        returnCooldown: 2.8,
+        ceilingY: CEILING_Y - 1.4,
+        score: 380,
+        radius: 1.25,
+        color: 0x3fd4ff,
+        ceilingStalker: true,
+        boss: true,
+        visionRange: 30,
+        visionAngleDeg: 135,
+        hearingRange: 24,
     },
 });
 
 export const LEVEL_CONFIGS = Object.freeze([
     {
         number: 1,
-        name: "NÁKLADOVÝ PROSTOR",
-        subtitle: "Sektor CARGO-7",
-        size: [46, 56],
+        name: "DOKOVACÍ UZEL",
+        subtitle: "Sektor Unity",
         accent: 0xff8736,
         fog: 0x263038,
-        enemies: { crawler: 11 },
+        enemies: { crawler: 9 },
+        elite: {},
         boss: "alpha",
         pickups: 4,
         props: "cargo",
@@ -353,49 +429,142 @@ export const LEVEL_CONFIGS = Object.freeze([
         airlock: false,
         oxygenZone: false,
         turretKit: false,
+        layout: { modules: [{ type: "cargo", angle: 0 }, { type: "cargo", angle: Math.PI }], bossArena: false },
     },
     {
         number: 2,
-        name: "LABORATOŘE",
-        subtitle: "Výzkumný blok XENO",
-        size: [52, 60],
+        name: "SKLAD",
+        subtitle: "Sektor Zarja",
         accent: 0x56c7ff,
         fog: 0x22313c,
-        enemies: { crawler: 8, CEILING_STALKER: 7 },
-        boss: "praetorian",
-        pickups: 5,
-        props: "lab",
+        enemies: { crawler: 6, CEILING_STALKER: 6 },
+        elite: {},
+        boss: "motherStalker",
+        pickups: 4,
+        props: "cargo",
         weaponPickup: "shotgun",
-        ammoPickups: ["shotgun", "shotgun"],
-        airlock: true,
+        ammoPickups: ["shotgun"],
+        airlock: false,
         oxygenZone: false,
         turretKit: false,
+        layout: { modules: [{ type: "storage", angle: Math.PI / 2 }, { type: "storage", angle: -Math.PI / 2 }], bossArena: false },
     },
     {
         number: 3,
-        name: "HANGÁR",
-        subtitle: "Letová paluba H-3",
-        size: [62, 70],
-        accent: 0xffb13d,
-        fog: 0x3a3024,
-        enemies: { hunter: 10, spitter: 8 },
+        name: "LABORATOŘ",
+        subtitle: "Sektor Destiny",
+        accent: 0x7cff9a,
+        fog: 0x1f2f28,
+        enemies: { crawler: 7, hunter: 4 },
+        elite: {},
+        boss: "praetorian",
+        pickups: 4,
+        props: "lab",
+        weaponPickup: null,
+        ammoPickups: ["shotgun"],
+        airlock: true,
+        oxygenZone: false,
+        turretKit: false,
+        layout: { modules: [{ type: "lab", angle: 0 }, { type: "lab", angle: Math.PI }], bossArena: true },
+    },
+    {
+        number: 4,
+        name: "SKLENÍK",
+        subtitle: "Sektor Priroda",
+        accent: 0x8dff5a,
+        fog: 0x24331f,
+        enemies: { crawler: 5, spitter: 6 },
+        elite: {},
         boss: "mutant",
         pickups: 5,
-        props: "hangar",
+        props: "lab",
         weaponPickup: "flamethrower",
+        ammoPickups: ["flamethrower"],
+        airlock: true,
+        oxygenZone: false,
+        turretKit: false,
+        layout: { modules: [{ type: "greenhouse", angle: Math.PI / 3 }, { type: "greenhouse", angle: -Math.PI / 3 }], bossArena: false },
+    },
+    {
+        number: 5,
+        name: "SERVISNÍ MODUL",
+        subtitle: "Sektor Kvant",
+        accent: 0xffb13d,
+        fog: 0x3a3024,
+        enemies: { crawler: 6, hunter: 5 },
+        elite: { crawler: 5 },
+        boss: "praetorian",
+        pickups: 5,
+        props: "hangar",
+        weaponPickup: null,
+        ammoPickups: ["shotgun", "flamethrower"],
+        airlock: true,
+        oxygenZone: true,
+        turretKit: true,
+        layout: { modules: [{ type: "service", angle: 0 }, { type: "service", angle: Math.PI }], bossArena: true },
+    },
+    {
+        number: 6,
+        name: "VYHLÍDKA",
+        subtitle: "Sektor Cupola",
+        accent: 0xa8d4ff,
+        fog: 0x1a2838,
+        enemies: { CEILING_STALKER: 7, hunter: 4 },
+        elite: { CEILING_STALKER: 4 },
+        boss: "alphaPack",
+        pickups: 5,
+        props: "cupola",
+        weaponPickup: null,
+        ammoPickups: ["shotgun", "flamethrower"],
+        airlock: true,
+        oxygenZone: false,
+        turretKit: true,
+        layout: { modules: [{ type: "cupola", angle: 0 }], bossArena: true },
+    },
+    {
+        number: 7,
+        name: "HANGÁR",
+        subtitle: "Sektor Kristall",
+        accent: 0xc9a0ff,
+        fog: 0x2a2438,
+        enemies: { hunter: 9, CEILING_STALKER: 4 },
+        elite: { hunter: 5 },
+        boss: "praetorianDuo",
+        pickups: 5,
+        props: "hangar",
+        weaponPickup: null,
         ammoPickups: ["shotgun", "flamethrower", "flamethrower"],
         airlock: true,
         oxygenZone: true,
         turretKit: true,
+        layout: { modules: [{ type: "hangar", angle: Math.PI / 2 }, { type: "hangar", angle: -Math.PI / 2 }], bossArena: true },
     },
     {
-        number: 4,
-        name: "REAKTOR",
-        subtitle: "Jádro ORION-9",
-        size: [66, 72],
+        number: 8,
+        name: "VELÍN",
+        subtitle: "Sektor Zvezda",
+        accent: 0xff7088,
+        fog: 0x382028,
+        enemies: { spitter: 7, hunter: 6, CEILING_STALKER: 3 },
+        elite: { spitter: 5, hunter: 3 },
+        boss: "reactorGuardian",
+        pickups: 6,
+        props: "command",
+        weaponPickup: null,
+        ammoPickups: ["shotgun", "flamethrower", "flamethrower"],
+        airlock: true,
+        oxygenZone: true,
+        turretKit: true,
+        layout: { modules: [{ type: "command", angle: 0 }, { type: "command", angle: Math.PI }], bossArena: true },
+    },
+    {
+        number: 9,
+        name: "REAKTOROVÉ JÁDRO",
+        subtitle: "Sektor Jádro ORION-9",
         accent: 0xff4057,
         fog: 0x38252a,
-        enemies: { crawler: 6, CEILING_STALKER: 5, hunter: 7, spitter: 6 },
+        enemies: { crawler: 4, CEILING_STALKER: 4, hunter: 5, spitter: 5 },
+        elite: { crawler: 3, CEILING_STALKER: 3, hunter: 3, spitter: 3 },
         boss: "queen",
         pickups: 6,
         props: "reactor",
@@ -404,5 +573,17 @@ export const LEVEL_CONFIGS = Object.freeze([
         airlock: true,
         oxygenZone: true,
         turretKit: true,
+        layout: { modules: [{ type: "reactor", angle: 0 }], bossArena: true },
     },
 ]);
+
+export const STATION_DEFAULTS = Object.freeze({
+    ringRadius: 20,
+    corridorWidth: 7,
+    ringSegments: 14,
+    tunnelLength: 7,
+    tunnelWidth: 3.2,
+    moduleLength: 12,
+    moduleRadius: 5.5,
+    partitionDepth: 0.55,
+});
