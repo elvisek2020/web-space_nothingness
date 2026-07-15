@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GAME_CONFIG, VISUALS, WEAPONS } from "./config.js";
-import { isInsideAnyCollider, moveWithSubsteps } from "./collision.js";
+import { gameplayColliders, isInsideAnyCollider, moveWithSubsteps } from "./collision.js";
+import { isOnWalkableFloor } from "./floor-walk.js";
 import {
     createGlowSprite,
     createParticleBurst,
@@ -228,10 +229,11 @@ export class Player {
         this._notifyWeapon();
     }
 
-    setWorld(position, colliders, bounds) {
+    setWorld(position, colliders, bounds, layoutGraph = null) {
         this.camera.position.copy(position);
         this.colliders = colliders;
         this.bounds = bounds;
+        this.layoutGraph = layoutGraph;
         this.clearProjectiles();
     }
 
@@ -381,24 +383,45 @@ export class Player {
     }
 
     moveBy(x, z) {
+        const solid = gameplayColliders(this.colliders);
         const resolved = moveWithSubsteps(
             { x: this.camera.position.x, z: this.camera.position.z },
             { x, z },
             GAME_CONFIG.player.radius,
-            this.colliders,
+            solid,
             this.bounds,
             GAME_CONFIG.world.collisionSubstep,
         );
+        const hulls = this.colliders.filter((collider) => collider.type === "hull-shell");
+        const onHull = hulls.length > 0 && isInsideAnyCollider(
+            resolved,
+            GAME_CONFIG.player.radius,
+            hulls,
+        );
+        const onFloor = this.layoutGraph
+            ? isOnWalkableFloor(resolved.x, resolved.z, this.layoutGraph)
+            : true;
+        if (onHull && !onFloor) {
+            const length = Math.hypot(resolved.x, resolved.z) || 1;
+            resolved.x -= (resolved.x / length) * 0.35;
+            resolved.z -= (resolved.z / length) * 0.35;
+            if (typeof console !== "undefined") {
+                console.warn("[ORION-9] hull-shell contact — pushed inward", {
+                    x: resolved.x,
+                    z: resolved.z,
+                });
+            }
+        }
         this.camera.position.x = resolved.x;
         this.camera.position.z = resolved.z;
     }
 
     _blocked(x, z, radius) {
-        return isInsideAnyCollider({ x, z }, radius, this.colliders);
+        return isInsideAnyCollider({ x, z }, radius, gameplayColliders(this.colliders));
     }
 
     _blockingCollider(x, z, radius) {
-        return this.colliders.find((collider) => isInsideAnyCollider(
+        return gameplayColliders(this.colliders).find((collider) => isInsideAnyCollider(
             { x, z },
             radius,
             [collider],

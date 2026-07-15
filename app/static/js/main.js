@@ -12,8 +12,9 @@ import {
 import { submitScore, refreshLeaderboards } from "./api.js";
 import { GameAudio } from "./audio.js";
 import { BarrelManager } from "./barrels.js";
-import { isInsideAnyCollider } from "./collision.js";
-import { findFloorHoles } from "./floor-walk.js";
+import { gameplayColliders, isInsideAnyCollider } from "./collision.js";
+import { findFloorHoles, findWallBreaches } from "./floor-walk.js";
+import { isInsideModuleBounds } from "./station-layout.js";
 import { EnemyManager } from "./enemies.js";
 import { Hud } from "./hud.js";
 import { LevelBuilder, seededRandom } from "./levels.js";
@@ -168,7 +169,11 @@ function setupLevel(index, freshRun = false, spawnEnemies = !TEST_MODE) {
     rendering?.markShadowsDirty();
     applyBrightness();
 
-    if (isInsideAnyCollider(world.playerStart, GAME_CONFIG.player.radius, world.colliders)) {
+    if (isInsideAnyCollider(
+        world.playerStart,
+        GAME_CONFIG.player.radius,
+        gameplayColliders(world.colliders),
+    )) {
         console.warn("[ORION-9] playerStart is inside a collider", {
             start: { x: world.playerStart.x, z: world.playerStart.z },
             level: config.number,
@@ -181,9 +186,10 @@ function setupLevel(index, freshRun = false, spawnEnemies = !TEST_MODE) {
             insideCollider: isInsideAnyCollider(
                 world.playerStart,
                 GAME_CONFIG.player.radius,
-                world.colliders,
+                gameplayColliders(world.colliders),
             ),
             colliders: world.colliders.length,
+            layout: world.layoutValidation,
         });
     }
 
@@ -192,9 +198,10 @@ function setupLevel(index, freshRun = false, spawnEnemies = !TEST_MODE) {
         lastTimeBonus = 0;
         gameOverReason = "ORION-9 zůstává v karanténě.";
         player.reset(world.playerStart, world.colliders, world.bounds, 0);
+        player.layoutGraph = world.layoutGraph || null;
         hud.reset();
     } else {
-        player.setWorld(world.playerStart, world.colliders, world.bounds);
+        player.setWorld(world.playerStart, world.colliders, world.bounds, world.layoutGraph || null);
         player.active = true;
     }
     hud.setLevel(config.number, config.name);
@@ -652,7 +659,7 @@ function exposeTestApi() {
             return isInsideAnyCollider(
                 world.playerStart,
                 GAME_CONFIG.player.radius,
-                world.colliders,
+                gameplayColliders(world.colliders),
             );
         },
         getInputDebug: () => player.getInputDebug(),
@@ -662,10 +669,113 @@ function exposeTestApi() {
             return player.shoot(now);
         },
         checkFloorIntegrity(options = {}) {
-            return findFloorHoles(
-                { ...world.layout, modules: world.layout.modules || [] },
-                options,
+            return findFloorHoles(world.layoutGraph || world.layout, options);
+        },
+        checkWallIntegrity(options = {}) {
+            return findWallBreaches(world.layoutGraph || world.layout, options);
+        },
+        getLayoutValidation: () => world.layoutValidation || null,
+        getNavNodes: () => (world.navNodes || []).map((node) => ({ ...node })),
+        getModules: () => (world.layoutGraph?.modules || []).map((mod) => ({
+            id: mod.id,
+            type: mod.type,
+            angle: mod.angle,
+            center: { ...mod.center },
+            isBoss: Boolean(mod.isBoss),
+        })),
+        isInsideModule(moduleId) {
+            const mod = world.layoutGraph?.modules?.find((item) => item.id === moduleId);
+            if (!mod) return false;
+            return isInsideModuleBounds(
+                player.camera.position.x,
+                player.camera.position.z,
+                mod,
             );
+        },
+        walkToward(x, z, seconds = 2) {
+            const steps = Math.ceil(seconds * 60);
+            const speed = GAME_CONFIG.player.speed / 60;
+            let stuckFrames = 0;
+            for (let index = 0; index < steps; index += 1) {
+                const beforeX = player.camera.position.x;
+                const beforeZ = player.camera.position.z;
+                const dx = x - beforeX;
+                const dz = z - beforeZ;
+                const length = Math.hypot(dx, dz) || 1;
+                if (length < 0.35) break;
+                const fx = dx / length;
+                const fz = dz / length;
+                player.moveBy(fx * speed, fz * speed);
+                const moved = Math.hypot(
+                    player.camera.position.x - beforeX,
+                    player.camera.position.z - beforeZ,
+                );
+                if (moved < speed * 0.15) {
+                    stuckFrames += 1;
+                    // Strafe left/right to slip past jambs / corner catches.
+                    const side = stuckFrames % 2 === 0 ? 1 : -1;
+                    player.moveBy(-fz * speed * side, fx * speed * side);
+                    player.moveBy(fx * speed, fz * speed);
+                } else {
+                    stuckFrames = 0;
+                }
+            }
+            return this.getPlayerPos();
+        },
+        walkNavPath(nodeIds, secondsPerHop = 2.5) {
+            const byId = new Map((world.navNodes || []).map((node) => [node.id, node]));
+            nodeIds.forEach((id) => {
+                const node = byId.get(id);
+                if (!node) return;
+                this.walkToward(node.x, node.z, secondsPerHop);
+            });
+            return this.getPlayerPos();
+        },
+        clearLivingEnemies() {
+            (enemyManager?.enemies || []).forEach((enemy) => {
+                if (enemy.dead || enemy.definition.boss) return;
+                enemy.hp = 0;
+                enemy.dead = true;
+            });
+            enemyManager?._notifyCount?.();
+            // Trigger boss spawn check via a tiny update tick.
+            if (enemyManager && !enemyManager.bossSpawned) {
+                const living = enemyManager.enemies.filter((enemy) => !enemy.dead);
+                if (living.length === 0) enemyManager._spawnBoss();
+            }
+            return {
+                remaining: enemyManager?.enemies.filter((enemy) => !enemy.dead).length || 0,
+                bossSpawned: Boolean(enemyManager?.bossSpawned),
+            };
+        },
+        rescueStuckEnemies: () => enemyManager?.rescueStuckEnemies?.() || 0,
+        getBossState() {
+            const bosses = (enemyManager?.enemies || [])
+                .filter((enemy) => !enemy.dead && enemy.definition.boss)
+                .map((enemy) => ({
+                    type: enemy.type,
+                    position: {
+                        x: enemy.group.position.x,
+                        y: enemy.group.position.y,
+                        z: enemy.group.position.z,
+                    },
+                    insideCollider: isInsideAnyCollider(
+                        enemy.group.position,
+                        enemy.radius * 0.75,
+                        gameplayColliders(world.colliders),
+                    ),
+                }));
+            return {
+                bossSpawned: Boolean(enemyManager?.bossSpawned),
+                arena: world.bossArena
+                    ? {
+                        x: world.bossArena.center.x,
+                        z: world.bossArena.center.z,
+                        moduleId: world.bossArena.moduleId || null,
+                    }
+                    : null,
+                bosses,
+            };
         },
         setPlayerPos(x, z) {
             const radius = GAME_CONFIG.player.radius;
@@ -708,7 +818,11 @@ function exposeTestApi() {
             return this.getState();
         },
         isInsideAnyCollider(position) {
-            return isInsideAnyCollider(position, GAME_CONFIG.player.radius, world.colliders);
+            return isInsideAnyCollider(
+                position,
+                GAME_CONFIG.player.radius,
+                gameplayColliders(world.colliders),
+            );
         },
         getColliders: () => world.colliders.map((collider) => ({ ...collider })),
         getBounds: () => ({ ...world.bounds }),
@@ -738,6 +852,7 @@ function exposeTestApi() {
                 return {
                     type: enemy.type,
                     state: enemy.stalkerState || null,
+                    jumpElapsed: enemy.jumpElapsed ?? null,
                     position: { x: position.x, y: position.y, z: position.z },
                     distanceFromStart: Math.hypot(
                         position.x - world.playerStart.x,
@@ -746,10 +861,52 @@ function exposeTestApi() {
                     insideCollider: isInsideAnyCollider(
                         position,
                         enemy.radius * 0.75,
-                        world.colliders,
+                        gameplayColliders(world.colliders),
                     ),
                 };
             }),
+        provokeCeilingStalker() {
+            const stalker = (enemyManager?.enemies || []).find((enemy) => (
+                !enemy.dead && enemy.definition.ceilingStalker
+            ));
+            if (!stalker) return null;
+            player.camera.position.x = stalker.group.position.x;
+            player.camera.position.z = stalker.group.position.z;
+            stalker.alertTimer = 5;
+            stalker.stalkerState = "warning";
+            stalker.stalkerTimer = 0.15;
+            return {
+                x: stalker.group.position.x,
+                z: stalker.group.position.z,
+                state: stalker.stalkerState,
+            };
+        },
+        /** Advance gameplay systems without relying on rAF (Playwright throttles timers). */
+        tickGame(seconds = 1) {
+            const step = 1 / 60;
+            const frames = Math.max(1, Math.ceil(seconds / step));
+            let elapsed = clock.elapsedTime;
+            gameRunning = true;
+            player.active = true;
+            for (let index = 0; index < frames; index += 1) {
+                elapsed += step;
+                player.update(step, elapsed);
+                levelBuilder?.update(elapsed);
+                enemyManager?.update(step, elapsed, player);
+                pickupManager?.update(step, elapsed, player);
+                barrelManager?.update(step, player, enemyManager);
+                airlockSystem?.update(step);
+                oxygenSystem?.update(step, player);
+                survivorManager?.update(player);
+                turretSystem?.update(step, enemyManager);
+                selfDestructSystem?.update(step, player);
+            }
+            return {
+                seconds,
+                frames,
+                graceRemaining: enemyManager?.graceRemaining || 0,
+            };
+        },
         async forceGameOver() {
             sessionActive = true;
             await finishRun(false);

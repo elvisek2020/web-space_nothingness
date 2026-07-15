@@ -95,6 +95,11 @@ export function isInsideAnyCollider(position, radius, colliders) {
     return colliders.some((box) => circleIntersectsObb(position.x, position.z, radius, box));
 }
 
+/** Hull shell is a void-escape safety net — exclude from normal walk/spawn collision. */
+export function gameplayColliders(colliders) {
+    return colliders.filter((box) => box.type !== "hull-shell");
+}
+
 export function clampToBounds(position, radius, bounds) {
     if (!bounds) return { x: position.x, z: position.z };
     return {

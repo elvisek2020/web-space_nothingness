@@ -138,28 +138,21 @@ test("ceiling stalker warns, jumps to floor and respects colliders", async ({ pa
     expect(initial.stalker.position.y).toBeGreaterThan(3);
     expect(initial.stalker.insideCollider).toBe(false);
     await expect(page.locator(".radar-ceiling").first()).toBeVisible();
-    await page.waitForTimeout(3500);
 
-    const cycle = await page.evaluate(async ({ x, z }) => {
+    const cycle = await page.evaluate(() => {
         window.__game.setGodmode(true);
-        window.__game.setPlayerPos(x, z);
-        let minY = Infinity;
-        let ground = null;
-        const deadline = performance.now() + 18_000;
-        while (performance.now() < deadline) {
-            const stalker = window.__game.getEnemies()
-                .find((enemy) => enemy.type === "CEILING_STALKER");
-            if (stalker) minY = Math.min(minY, stalker.position.y);
-            if (stalker?.state === "ground") {
-                ground = stalker;
-                break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 80));
-        }
+        window.__game.tickGame(3.2); // clear spawn grace
+        window.__game.provokeCeilingStalker();
+        window.__game.tickGame(2.5); // warning → jump → ground
+        const ground = window.__game.getEnemies().find((enemy) => (
+            enemy.type === "CEILING_STALKER" && enemy.state === "ground"
+        ));
+        const minY = Math.min(
+            ...window.__game.getEnemies()
+                .filter((enemy) => enemy.type === "CEILING_STALKER")
+                .map((enemy) => enemy.position.y),
+        );
         return { minY, ground };
-    }, {
-        x: initial.stalker.position.x,
-        z: initial.stalker.position.z,
     });
     expect(cycle.minY).toBeGreaterThan(0);
     expect(cycle.ground).toBeTruthy();
@@ -249,7 +242,121 @@ test("floor integrity has no holes on all nine levels", async ({ page }) => {
         expect(result.samples, `level ${level} samples`).toBeGreaterThan(60);
         expect(result.holes, `level ${level} holes`).toEqual([]);
         expect(await page.evaluate(() => window.__game.isPlayerStartBlocked())).toBe(false);
+        const walls = await page.evaluate(() => window.__game.checkWallIntegrity({ step: 1.6 }));
+        expect(walls.breaches, `level ${level} wall breaches`).toEqual([]);
+        const validation = await page.evaluate(() => window.__game.getLayoutValidation());
+        expect(validation.ok, `level ${level} layout`).toBe(true);
+        expect(await page.evaluate(() => (
+            window.__game.getColliders().some((collider) => collider.type === "ring-trim")
+        ))).toBe(false);
+        expect(await page.evaluate(() => (
+            window.__game.getColliders().some((collider) => collider.type === "hull-shell")
+        ))).toBe(true);
     }
+});
+
+test("enemies never remain stuck inside colliders across seeds", async ({ page }) => {
+    test.setTimeout(120_000);
+    await openTestGame(page);
+    const levelCount = await page.evaluate(() => window.__game.getLevelCount());
+    for (let level = 1; level <= levelCount; level += 1) {
+        for (let wave = 0; wave < 3; wave += 1) {
+            await page.evaluate(
+                (number) => window.__game.skipToLevel(number, { spawnEnemies: true }),
+                level,
+            );
+            await page.evaluate(() => window.__game.rescueStuckEnemies());
+            const enemies = await page.evaluate(() => window.__game.getEnemies());
+            expect(enemies.every((enemy) => !enemy.insideCollider), `L${level} wave ${wave}`).toBe(true);
+        }
+    }
+});
+
+test("player can walk from ring into every module and back", async ({ page }) => {
+    test.setTimeout(180_000);
+    await openTestGame(page);
+    const levelCount = await page.evaluate(() => window.__game.getLevelCount());
+    for (let level = 1; level <= levelCount; level += 1) {
+        await page.evaluate((number) => window.__game.skipToLevel(number), level);
+        const modules = await page.evaluate(() => window.__game.getModules());
+        for (const mod of modules) {
+            const path = await page.evaluate((moduleId) => {
+                const nodes = window.__game.getNavNodes();
+                const portal = nodes.find((node) => node.kind === "portal" && node.moduleId === moduleId);
+                const tunnel = nodes.find((node) => node.kind === "tunnel" && node.id.includes(moduleId.replace("module", "tunnel")));
+                const ringNear = nodes
+                    .filter((node) => node.kind === "ring")
+                    .sort((a, b) => {
+                        const da = Math.hypot(a.x - portal.x, a.z - portal.z);
+                        const db = Math.hypot(b.x - portal.x, b.z - portal.z);
+                        return da - db;
+                    })[0];
+                const moduleNode = nodes.find((node) => node.kind === "module" && node.moduleId === moduleId);
+                return { ringNear, tunnel, portal, moduleNode };
+            }, mod.id);
+            expect(path.portal, `portal ${mod.id}`).toBeTruthy();
+            expect(path.ringNear, `ring near ${mod.id}`).toBeTruthy();
+
+            await page.evaluate(({ x, z }) => window.__game.setPlayerPos(x, z), path.ringNear);
+            if (path.tunnel) {
+                await page.evaluate(({ x, z }) => window.__game.walkToward(x, z, 4), path.tunnel);
+            }
+            await page.evaluate(({ x, z }) => window.__game.walkToward(x, z, 4), path.portal);
+            await page.evaluate(({ x, z }) => window.__game.walkToward(x, z, 5), path.moduleNode || mod.center);
+            const inside = await page.evaluate((id) => window.__game.isInsideModule(id), mod.id);
+            expect(inside, `entered ${mod.id} on level ${level}`).toBe(true);
+
+            await page.evaluate(({ x, z }) => window.__game.walkToward(x, z, 4), path.portal);
+            if (path.tunnel) {
+                await page.evaluate(({ x, z }) => window.__game.walkToward(x, z, 4), path.tunnel);
+            }
+            await page.evaluate(({ x, z }) => window.__game.walkToward(x, z, 4), path.ringNear);
+            const backOnRing = await page.evaluate(() => {
+                const pos = window.__game.getPlayerPos();
+                const r = Math.hypot(pos.x, pos.z);
+                return r > 15 && r < 25;
+            });
+            expect(backOnRing, `returned from ${mod.id}`).toBe(true);
+        }
+    }
+});
+
+test("clearing wave spawns reachable boss with HUD warning", async ({ page }) => {
+    test.setTimeout(120_000);
+    await openTestGame(page);
+    // Level 3 has bossArena + praetorian
+    await page.evaluate(() => window.__game.skipToLevel(3, { spawnEnemies: true }));
+    await page.evaluate(() => window.__game.setGodmode(true));
+    const cleared = await page.evaluate(() => window.__game.clearLivingEnemies());
+    expect(cleared.bossSpawned).toBe(true);
+    await expect(page.locator("#boss-warning")).toBeVisible({ timeout: 5000 });
+    const boss = await page.evaluate(() => window.__game.getBossState());
+    expect(boss.bosses.length).toBeGreaterThan(0);
+    expect(boss.bosses.every((item) => !item.insideCollider)).toBe(true);
+    expect(boss.arena).toBeTruthy();
+    expect(Math.hypot(boss.arena.x, boss.arena.z)).toBeGreaterThan(20);
+    await page.evaluate(({ x, z }) => {
+        const moduleId = window.__game.getBossState().arena?.moduleId;
+        const nodes = window.__game.getNavNodes();
+        const portal = nodes.find((node) => node.kind === "portal" && node.moduleId === moduleId);
+        const tunnel = nodes.find((node) => node.kind === "tunnel" && node.moduleId === moduleId);
+        const ringNear = nodes
+            .filter((node) => node.kind === "ring")
+            .sort((a, b) => Math.hypot(a.x - portal.x, a.z - portal.z) - Math.hypot(b.x - portal.x, b.z - portal.z))[0];
+        window.__game.setPlayerPos(ringNear.x, ringNear.z);
+        if (tunnel) window.__game.walkToward(tunnel.x, tunnel.z, 4);
+        window.__game.walkToward(portal.x, portal.z, 4);
+        window.__game.walkToward(x, z, 5);
+    }, {
+        x: boss.arena.x,
+        z: boss.arena.z,
+    });
+    const nearBoss = await page.evaluate(() => {
+        const pos = window.__game.getPlayerPos();
+        const arena = window.__game.getBossState().arena;
+        return Math.hypot(pos.x - arena.x, pos.z - arena.z) < 10;
+    });
+    expect(nearBoss).toBe(true);
 });
 
 test("sustained shooting reuses pooled projectiles with zero frame allocations", async ({ page }) => {

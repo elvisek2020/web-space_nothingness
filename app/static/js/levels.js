@@ -12,6 +12,7 @@ import {
 } from "./config.js";
 import { createCollider, circleIntersectsObb } from "./collision.js";
 import { isOnWalkableFloor } from "./floor-walk.js";
+import { buildStationLayout } from "./station-layout.js";
 import { createSmokeSprite, disposeObject3D, getVisuals } from "./visual-utils.js";
 
 export function seededRandom(seed) {
@@ -39,11 +40,20 @@ export class LevelBuilder {
         this.random = seededRandom(options.seed ?? config.number * 9137);
         this.seed = options.seed ?? config.number * 9137;
         this.debug = Boolean(options.debug);
-        this.layout = { ...STATION_DEFAULTS, ...(config.layout || {}) };
+        this.station = buildStationLayout(config.layout || {});
+        this.layout = {
+            ...STATION_DEFAULTS,
+            ...(config.layout || {}),
+            modules: this.station.modules.map((mod) => ({
+                type: mod.type,
+                angle: mod.angle,
+            })),
+        };
         this.animatedVisuals = [];
         this.ceilingY = CEILING_Y;
         this.floorY = FLOOR_Y;
         this.bounds = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+        this.layoutValidation = null;
     }
 
     build() {
@@ -54,29 +64,42 @@ export class LevelBuilder {
             this.quality === "high" ? LIGHTING.fog.high.far : LIGHTING.fog.low.far,
         );
         this.scene.add(this.group);
+        this.layoutValidation = this.station.validate();
+        if (this.debug) {
+            console.info("[ORION-9] station layout validation", this.layoutValidation);
+            if (!this.layoutValidation.ok) {
+                console.warn("[ORION-9] layout errors", this.layoutValidation.errors);
+            }
+        }
         this._buildTorusRing();
-        (this.layout.modules || []).forEach((moduleSpec) => {
-            this._buildDockTunnel(moduleSpec.angle);
-            this._buildModule(moduleSpec.type, moduleSpec.angle);
-        });
-        if (this.layout.bossArena) this._buildBossDome();
+        this.station.tunnels.forEach((tunnel) => this._buildDockTunnel(tunnel));
+        this.station.modules.forEach((mod) => this._buildModule(mod));
+        if (this.station.hasBossArena) this._buildBossDome();
+        this._buildHullShell();
         this._buildStartBay();
         this._buildLighting();
         this._buildStars();
         this._collectFloorPoints();
         this._createSpawnPoints();
         const features = this._buildFeatureGeometry();
-        if (this.debug) this._buildColliderDebug();
+        if (this.debug) {
+            this._buildColliderDebug();
+            this._buildNavDebug();
+        }
         this._finalizeBounds();
+        const playerStart = this._playerStart();
         return {
             colliders: this.colliders,
             spawnPoints: this.spawnPoints,
             pickupPoints: this.pickupPoints,
             floorPoints: this.floorPoints,
             floorMeshes: this.floorMeshes,
-            layout: { ...this.layout },
+            layout: { ...this.layout, modules: this.layout.modules },
+            layoutGraph: this.station,
+            navNodes: this.station.navNodes.map((node) => ({ ...node })),
+            layoutValidation: this.layoutValidation,
             bounds: { ...this.bounds },
-            playerStart: this._playerStart(),
+            playerStart,
             floorY: this.floorY,
             ceilingY: this.ceilingY,
             moduleCenters: this.moduleCenters.map((center) => center.clone()),
@@ -203,57 +226,88 @@ export class LevelBuilder {
     _buildTorusRing() {
         const floor = this._texturedMaterial("floor", 4, 4, VISUALS.materials.floor);
         const wall = this._texturedMaterial("wall", 2, 2, VISUALS.materials.wall);
-        const trim = this._material(this.config.accent, {
+        const kick = this._material(this.config.accent, {
             emissive: this.config.accent,
-            emissiveIntensity: VISUALS.emissive.stripIntensity * 0.55,
+            emissiveIntensity: VISUALS.emissive.stripIntensity * 0.4,
             ...VISUALS.materials.trim,
         });
-        const { ringRadius, corridorWidth, ringSegments } = this.layout;
-        const inner = ringRadius - corridorWidth / 2;
-        const outer = ringRadius + corridorWidth / 2;
-        const arcLen = (Math.PI * 2 * ringRadius) / ringSegments;
-        const thetaStep = (Math.PI * 2) / ringSegments;
+        const { inner, outer, segments, arcLen } = this.station.ring;
 
-        for (let index = 0; index < ringSegments; index += 1) {
-            const angle = (index / ringSegments) * Math.PI * 2;
-            const midAngle = angle + thetaStep / 2;
-            const midX = Math.sin(midAngle) * ringRadius;
-            const midZ = Math.cos(midAngle) * ringRadius;
-            // Tangential yaw: box local +Z follows the ring tangent.
+        segments.forEach((seg) => {
+            const { midAngle, midX, midZ, thetaStart, thetaLength, hasWindow } = seg;
             const yaw = midAngle;
+            const docked = this._isDockedSegment(midAngle);
 
-            this._addFloorSector(floor, inner, outer, angle, thetaStep);
-            this._expandBounds(midX, midZ, corridorWidth);
+            this._addFloorSector(floor, inner, outer, thetaStart, thetaLength);
+            this._expandBounds(midX, midZ, this.station.params.corridorWidth);
 
-            if (index % 3 === 1) {
-                const window = new THREE.Mesh(
-                    new THREE.PlaneGeometry(2.8, 2.2),
-                    new THREE.MeshBasicMaterial({
-                        color: 0x0b2538,
-                        transparent: true,
-                        opacity: 0.55,
-                        side: THREE.DoubleSide,
-                    }),
-                );
-                window.position.set(
-                    Math.sin(midAngle) * (outer + 0.05),
-                    MIN_CEILING * 0.55,
-                    Math.cos(midAngle) * (outer + 0.05),
-                );
-                window.lookAt(0, window.position.y, 0);
-                this.group.add(window);
-            } else {
-                // yaw=midAngle: local X = tangent, local Z = radial → long side is width.
+            // Always solid outer wall except dock openings into tunnels.
+            if (!docked) {
+                if (hasWindow) {
+                    this._box(
+                        "ring-outer-sill",
+                        Math.sin(midAngle) * (outer + 0.2),
+                        0.55,
+                        Math.cos(midAngle) * (outer + 0.2),
+                        arcLen * 1.02,
+                        1.1,
+                        0.55,
+                        wall,
+                        true,
+                        yaw,
+                    );
+                    this._box(
+                        "ring-outer-header",
+                        Math.sin(midAngle) * (outer + 0.2),
+                        MIN_CEILING - 0.55,
+                        Math.cos(midAngle) * (outer + 0.2),
+                        arcLen * 1.02,
+                        1.1,
+                        0.55,
+                        wall,
+                        true,
+                        yaw,
+                    );
+                    const window = new THREE.Mesh(
+                        new THREE.PlaneGeometry(2.8, 2.2),
+                        new THREE.MeshBasicMaterial({
+                            color: 0x0b2538,
+                            transparent: true,
+                            opacity: 0.55,
+                            side: THREE.DoubleSide,
+                        }),
+                    );
+                    window.position.set(
+                        Math.sin(midAngle) * (outer + 0.05),
+                        MIN_CEILING * 0.55,
+                        Math.cos(midAngle) * (outer + 0.05),
+                    );
+                    window.lookAt(0, window.position.y, 0);
+                    this.group.add(window);
+                } else {
+                    this._box(
+                        "ring-outer",
+                        Math.sin(midAngle) * (outer + 0.2),
+                        MIN_CEILING / 2,
+                        Math.cos(midAngle) * (outer + 0.2),
+                        arcLen * 1.02,
+                        MIN_CEILING,
+                        0.55,
+                        wall,
+                        true,
+                        yaw,
+                    );
+                }
                 this._box(
-                    "ring-outer",
-                    Math.sin(midAngle) * (outer + 0.2),
-                    MIN_CEILING / 2,
-                    Math.cos(midAngle) * (outer + 0.2),
-                    arcLen * 1.02,
-                    MIN_CEILING,
-                    0.55,
-                    wall,
-                    true,
+                    "ring-kick-outer",
+                    Math.sin(midAngle) * (outer - 0.15),
+                    0.12,
+                    Math.cos(midAngle) * (outer - 0.15),
+                    arcLen * 0.9,
+                    0.18,
+                    0.08,
+                    kick,
+                    false,
                     yaw,
                 );
             }
@@ -271,105 +325,116 @@ export class LevelBuilder {
                 yaw,
             );
             this._box(
-                "ring-trim",
-                midX,
-                0.35,
-                midZ,
-                arcLen * 0.95,
+                "ring-kick-inner",
+                Math.sin(midAngle) * (inner + 0.15),
                 0.12,
-                0.12,
-                trim,
+                Math.cos(midAngle) * (inner + 0.15),
+                arcLen * 0.9,
+                0.18,
+                0.08,
+                kick,
                 false,
                 yaw,
             );
-        }
+        });
 
         this._box("ring-ceiling", 0, MIN_CEILING + 0.15, 0, outer * 2.2, 0.35, outer * 2.2, wall, false);
     }
 
-    _buildDockTunnel(angle) {
+    _buildDoorFrame(opening, material) {
+        const { x, z, yaw, width, height, depth } = opening;
+        const jambThickness = Math.max(0.28, (this.station.params.tunnelWidth - width) / 2);
+        const lintelHeight = Math.max(0.35, MIN_CEILING - height);
+        for (const side of [-1, 1]) {
+            this._box(
+                "door-jamb",
+                x + Math.cos(yaw) * side * (width / 2 + jambThickness / 2),
+                height / 2,
+                z - Math.sin(yaw) * side * (width / 2 + jambThickness / 2),
+                jambThickness,
+                height,
+                depth,
+                material,
+                true,
+                yaw,
+            );
+        }
+        this._box(
+            "door-lintel",
+            x,
+            height + lintelHeight / 2,
+            z,
+            width + jambThickness * 2,
+            lintelHeight,
+            depth,
+            material,
+            false, // visual only — XZ collision would seal the doorway
+            yaw,
+        );
+    }
+
+    _buildDockTunnel(tunnel) {
         const wall = this._texturedMaterial("wall", 2, 2, VISUALS.materials.wall);
         const floor = this._texturedMaterial("floor", 2, 2, VISUALS.materials.floor);
-        const { ringRadius, tunnelLength, tunnelWidth, partitionDepth, corridorWidth } = this.layout;
-        const startR = ringRadius + corridorWidth / 2 - 0.5;
-        const endR = startR + tunnelLength;
-        const midR = (startR + endR) / 2;
-        const cx = Math.sin(angle) * midR;
-        const cz = Math.cos(angle) * midR;
-        // Overlap into ring and module to seal seams.
+        const { cx, cz, angle, width, length, opening } = tunnel;
         this._addOrientedFloor(
             "tunnel-floor",
             cx,
             cz,
-            tunnelWidth + 0.35,
-            tunnelLength + 1.1,
+            width + 0.35,
+            length + 1.1,
             floor,
             angle,
         );
-        this._addCylindricalWalls("tunnel", cx, cz, tunnelWidth / 2, tunnelLength, angle, wall, true);
-        const partitionR = startR + partitionDepth;
-        const px = Math.sin(angle) * partitionR;
-        const pz = Math.cos(angle) * partitionR;
-        this._box(
-            "tunnel-partition",
-            px,
-            MIN_CEILING * 0.45,
-            pz,
-            tunnelWidth * 0.85,
-            MIN_CEILING * 0.9,
-            0.55,
-            wall,
-            true,
-            angle,
-        );
+        this._addCylindricalWalls("tunnel", cx, cz, width / 2, length, angle, wall, true);
+        this._buildDoorFrame(opening, wall);
         const portal = new THREE.Mesh(
-            new THREE.RingGeometry(tunnelWidth * 0.32, tunnelWidth * 0.42, 16),
+            new THREE.RingGeometry(opening.width * 0.38, opening.width * 0.48, 16),
             this._material(this.config.accent, {
                 emissive: this.config.accent,
                 emissiveIntensity: 0.8,
             }),
         );
-        portal.rotation.x = -Math.PI / 2;
-        portal.position.set(px, MIN_CEILING * 0.52, pz);
+        portal.rotation.y = angle;
+        portal.position.set(opening.x, opening.height * 0.52, opening.z);
         this.group.add(portal);
-        this._expandBounds(cx, cz, tunnelWidth + 2);
+        this._expandBounds(cx, cz, width + 2);
     }
 
-    _buildModule(type, angle) {
+    _buildModule(mod) {
         const wall = this._texturedMaterial("wall", 2, 2, VISUALS.materials.wall);
         const floor = this._texturedMaterial("floor", 3, 3, VISUALS.materials.floor);
         const prop = this._texturedMaterial("crate", 1.5, 1.5, VISUALS.materials.crate);
-        const { ringRadius, tunnelLength, moduleLength, moduleRadius } = this.layout;
-        const centerR = ringRadius + tunnelLength + moduleLength / 2 + 1;
-        const cx = Math.sin(angle) * centerR;
-        const cz = Math.cos(angle) * centerR;
+        const { type, angle, center, length, radius, centerR } = mod;
+        const cx = center.x;
+        const cz = center.z;
         this.moduleCenters.push(new THREE.Vector3(cx, GAME_CONFIG.player.height, cz));
         this._addOrientedFloor(
             "module-floor",
             cx,
             cz,
-            moduleRadius * 2 + 0.4,
-            moduleLength + 0.8,
+            radius * 2 + 0.4,
+            length + 0.8,
             floor,
             angle,
         );
-        this._addCylindricalWalls("module", cx, cz, moduleRadius, moduleLength, angle, wall, true);
-        this._expandBounds(cx, cz, moduleRadius + 2);
+        this._addCylindricalWalls("module", cx, cz, radius, length, angle, wall, true);
+        this._expandBounds(cx, cz, radius + 2);
 
         const rackCount = type === "cupola" ? 4 : 6;
         for (let index = 0; index < rackCount; index += 1) {
             const side = index % 2 ? 1 : -1;
-            const offset = -moduleLength / 2 + 2 + index * (moduleLength / (rackCount + 1));
-            const rx = cx + Math.sin(angle) * offset + Math.cos(angle) * side * (moduleRadius - 1.1);
-            const rz = cz + Math.cos(angle) * offset - Math.sin(angle) * side * (moduleRadius - 1.1);
+            const offset = -length / 2 + 2 + index * (length / (rackCount + 1));
+            const rx = cx + Math.sin(angle) * offset + Math.cos(angle) * side * (radius - 1.1);
+            const rz = cz + Math.cos(angle) * offset - Math.sin(angle) * side * (radius - 1.1);
             this._box("module-rack", rx, 1.1, rz, 1.4, 2.2, 0.65, prop, true, angle);
             this._box("module-rail", rx, 0.9, rz - side * 0.5, 0.08, 0.08, 1.2, wall, false, angle);
         }
 
         if (type === "cupola" || type === "greenhouse") {
             for (let index = 0; index < 3; index += 1) {
-                const px = cx + Math.cos(angle) * (moduleRadius - 0.2);
-                const pz = cz - Math.sin(angle) * (moduleRadius - 0.2);
+                const px = cx + Math.cos(angle) * (radius - 0.2);
+                const pz = cz - Math.sin(angle) * (radius - 0.2);
                 const pane = new THREE.Mesh(
                     new THREE.PlaneGeometry(2.4, 2.8),
                     new THREE.MeshBasicMaterial({
@@ -394,24 +459,59 @@ export class LevelBuilder {
         }
 
         if (type === "reactor") this._addReactorCore(cx, cz);
-        if (type === "hangar") this._addHangarShip(cx, cz);
+        if (type === "hangar") this._addHangarShip(cx, cz, angle);
         if (type === "lab" || type === "greenhouse") this._addLabTubes(cx, cz, angle);
     }
 
     _buildBossDome() {
+        const anchor = this.station.bossAnchor;
+        if (!anchor) return;
+        const bossMod = this.station.modules.find((mod) => mod.id === anchor.moduleId);
         const dome = this._material(0x2a353c, {
             metalness: 0.7,
             roughness: 0.35,
             transparent: true,
             opacity: 0.22,
         });
-        const radius = this.layout.ringRadius * 0.55;
+        const radius = (bossMod?.radius ?? 5.5) * 1.35;
         const mesh = new THREE.Mesh(
             new THREE.SphereGeometry(radius, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2),
             dome,
         );
-        mesh.position.y = MIN_CEILING;
+        mesh.position.set(anchor.x, MIN_CEILING, anchor.z);
         this.group.add(mesh);
+    }
+
+    _isDockedSegment(midAngle) {
+        const { outer, thetaStep } = this.station.ring;
+        return this.station.tunnels.some((tunnel) => {
+            let delta = Math.abs(tunnel.angle - midAngle);
+            if (delta > Math.PI) delta = Math.PI * 2 - delta;
+            // Cover the nearest segment(s) even when tunnel angle sits on a segment boundary.
+            const halfAngular = Math.atan2(tunnel.width * 0.6 + 0.5, outer) + thetaStep * 0.75;
+            return delta < halfAngular;
+        });
+    }
+
+    _buildHullShell() {
+        const wall = this._material(0x111111, { transparent: true, opacity: 0 });
+        const { segments, hullRadius, arcLen } = this.station.ring;
+        segments.forEach((seg) => {
+            // Leave dock wedges open so tunnels/modules stay reachable.
+            if (this._isDockedSegment(seg.midAngle)) return;
+            this._box(
+                "hull-shell",
+                Math.sin(seg.midAngle) * hullRadius,
+                MIN_CEILING / 2,
+                Math.cos(seg.midAngle) * hullRadius,
+                arcLen * 1.05,
+                MIN_CEILING + 1,
+                0.7,
+                wall,
+                true,
+                seg.midAngle,
+            );
+        });
     }
 
     _addReactorCore(cx, cz) {
@@ -423,21 +523,24 @@ export class LevelBuilder {
         this._box("reactor-core", cx, 2.8, cz, 4.6, 5.6, 4.6, coreMaterial, true);
     }
 
-    _addHangarShip(cx, cz) {
+    _addHangarShip(cx, cz, angle = 0) {
         const material = this._material(0x3a4651);
         const hull = new THREE.Mesh(new THREE.ConeGeometry(2.5, 10, 4), material);
         hull.rotation.x = Math.PI / 2;
         hull.rotation.z = Math.PI / 4;
-        hull.position.set(cx, 1.5, cz + 3);
+        hull.rotation.y = angle;
+        const ox = cx + Math.sin(angle) * 3;
+        const oz = cz + Math.cos(angle) * 3;
+        hull.position.set(ox, 1.5, oz);
         this.group.add(hull);
         this.colliders.push(createCollider({
             id: "hangar-ship",
             type: "ship",
-            cx,
-            cz: cz + 3,
-            halfW: 5,
-            halfD: 5,
-            yaw: 0,
+            cx: ox,
+            cz: oz,
+            halfW: 3.2,
+            halfD: 4.5,
+            yaw: angle,
         }));
     }
 
@@ -468,18 +571,13 @@ export class LevelBuilder {
     }
 
     _playerStart() {
-        const angle = (this.layout.modules?.[0]?.angle ?? 0) + Math.PI;
-        const r = this.layout.ringRadius - this.layout.corridorWidth * 0.15;
-        return new THREE.Vector3(
-            Math.sin(angle) * r,
-            GAME_CONFIG.player.height,
-            Math.cos(angle) * r,
-        );
+        const start = this.station.playerStart;
+        return new THREE.Vector3(start.x, start.y, start.z);
     }
 
     _buildStartBay() {
         const start = this._playerStart();
-        const angle = (this.layout.modules?.[0]?.angle ?? 0) + Math.PI;
+        const angle = (this.station.modules[0]?.angle ?? 0) + Math.PI;
         const frame = this._material(0x263239, { metalness: 0.82, roughness: 0.3 });
         const marker = this._texturedMaterial("hazard", 2, 1, { metalness: 0.34, roughness: 0.58 });
         for (const side of [-1, 1]) {
@@ -534,7 +632,7 @@ export class LevelBuilder {
         const count = this.quality === "high" ? 10 : 6;
         for (let index = 0; index < count; index += 1) {
             const angle = (index / count) * Math.PI * 2;
-            const r = this.layout.ringRadius + (index % 2 ? 4 : -2);
+            const r = this.station.ring.radius + (index % 2 ? 4 : -2);
             const emergency = index % 4 === 2;
             const color = emergency ? 0xff243d : this.config.accent;
             const intensity = emergency
@@ -589,6 +687,29 @@ export class LevelBuilder {
         }
     }
 
+    _isOnRingDeck(x, z) {
+        const r = Math.hypot(x, z);
+        const { inner, outer } = this.station.ring;
+        if (r < inner + 0.25 || r > outer - 0.25) return false;
+        return !this._isNearDock(x, z, 0.75);
+    }
+
+    _isNearDock(x, z, widthScale = 1.1) {
+        const angle = Math.atan2(x, z);
+        const r = Math.hypot(x, z);
+        return this.station.tunnels.some((tunnel) => {
+            let delta = Math.abs(angle - tunnel.angle);
+            if (delta > Math.PI) delta = Math.PI * 2 - delta;
+            const halfAngular = Math.atan2(tunnel.width * widthScale, this.station.ring.outer)
+                + this.station.ring.thetaStep * 0.85;
+            if (delta < halfAngular && r >= this.station.ring.inner - 0.5) return true;
+            // Also keep clear around portal / tunnel mid points.
+            if (Math.hypot(x - tunnel.cx, z - tunnel.cz) < tunnel.width * 1.1) return true;
+            if (Math.hypot(x - tunnel.opening.x, z - tunnel.opening.z) < tunnel.width * 1.1) return true;
+            return false;
+        });
+    }
+
     _pickRandomFloorPoints(count, minSpacing, constraints = {}) {
         const start = this._playerStart();
         const points = [];
@@ -601,6 +722,8 @@ export class LevelBuilder {
             if (points.length >= count) return;
             if (Math.hypot(candidate.x - start.x, candidate.z - start.z) < SPAWN_SAFE_RADIUS) return;
             if (constraints.moduleOnly && !this._isInSideModule(candidate.x, candidate.z)) return;
+            if (constraints.ringOnly && !this._isOnRingDeck(candidate.x, candidate.z)) return;
+            if (constraints.clearDocks !== false && this._isNearDock(candidate.x, candidate.z)) return;
             if (points.some((point) => Math.hypot(point.x - candidate.x, point.z - candidate.z) < minSpacing)) {
                 return;
             }
@@ -616,7 +739,29 @@ export class LevelBuilder {
     }
 
     _createSpawnPoints() {
-        this.spawnPoints = this._pickRandomFloorPoints(40, 3.5);
+        const start = this._playerStart();
+        const navCandidates = this.station.navNodes
+            .filter((node) => node.kind === "ring" || node.kind === "tunnel" || node.kind === "module")
+            .map((node) => new THREE.Vector3(node.x, 0, node.z))
+            .filter((point) => (
+                Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS
+                && !this._pointBlocked(point.x, point.z, 0.95)
+            ));
+
+        const floorExtras = this._pickRandomFloorPoints(24, 3.5);
+        const pool = [...navCandidates, ...floorExtras];
+        for (let index = pool.length - 1; index > 0; index -= 1) {
+            const swap = Math.floor(this.random() * (index + 1));
+            [pool[index], pool[swap]] = [pool[swap], pool[index]];
+        }
+        this.spawnPoints = [];
+        pool.forEach((candidate) => {
+            if (this.spawnPoints.length >= 40) return;
+            if (this.spawnPoints.some((point) => Math.hypot(point.x - candidate.x, point.z - candidate.z) < 3.2)) {
+                return;
+            }
+            this.spawnPoints.push(candidate.clone());
+        });
         this.pickupPoints = this._pickRandomFloorPoints(this.config.pickups, 4);
     }
 
@@ -624,14 +769,31 @@ export class LevelBuilder {
         const barrelPoints = this._pickRandomFloorPoints(
             FEATURES.barrels.countByLevel[this.config.number - 1],
             3,
+            { ringOnly: true },
         ).map((point) => new THREE.Vector3(point.x, 0.7, point.z));
 
-        const airlockAngle = this.layout.modules?.[0]?.angle ?? 0;
+        // Keep airlock on the ring deck, away from every dock opening.
+        let airlockAngle = Math.PI;
+        if (this.station.tunnels.length) {
+            let bestScore = -1;
+            for (let index = 0; index < this.station.ring.segments.length; index += 1) {
+                const angle = this.station.ring.segments[index].midAngle;
+                const score = Math.min(...this.station.tunnels.map((tunnel) => {
+                    let delta = Math.abs(tunnel.angle - angle);
+                    if (delta > Math.PI) delta = Math.PI * 2 - delta;
+                    return delta;
+                }));
+                if (score > bestScore) {
+                    bestScore = score;
+                    airlockAngle = angle;
+                }
+            }
+        }
         const airlockPosition = this.config.airlock
             ? new THREE.Vector3(
-                Math.sin(airlockAngle) * (this.layout.ringRadius + 2),
+                Math.sin(airlockAngle) * (this.station.ring.outer - 0.45),
                 0,
-                Math.cos(airlockAngle) * (this.layout.ringRadius + 2),
+                Math.cos(airlockAngle) * (this.station.ring.outer - 0.45),
             )
             : null;
         if (airlockPosition) {
@@ -662,7 +824,10 @@ export class LevelBuilder {
             : null;
 
         const survivorCount = FEATURES.survivors.countByLevel[this.config.number - 1];
-        const survivorPoints = this._pickRandomFloorPoints(survivorCount, 5, { moduleOnly: true })
+        const survivorPoints = this._pickRandomFloorPoints(survivorCount, 5, {
+            moduleOnly: true,
+            clearDocks: false,
+        })
             .map((point) => new THREE.Vector3(point.x, 0.9, point.z));
 
         const weaponCandidates = this._pickRandomFloorPoints(1, 0);
@@ -703,10 +868,39 @@ export class LevelBuilder {
             turretKitPoint,
             oxygenPickupPoint,
             escapePoint,
-            bossArena: this.layout.bossArena
-                ? { center: new THREE.Vector3(0, 0, 0), radius: this.layout.ringRadius * 0.45 }
+            bossArena: this.station.bossAnchor
+                ? {
+                    center: new THREE.Vector3(
+                        this.station.bossAnchor.x,
+                        0,
+                        this.station.bossAnchor.z,
+                    ),
+                    radius: (this.station.modules.find(
+                        (mod) => mod.id === this.station.bossAnchor.moduleId,
+                    )?.radius ?? 5.5) * 1.2,
+                    moduleId: this.station.bossAnchor.moduleId,
+                }
                 : null,
         };
+    }
+
+    _buildNavDebug() {
+        const material = new THREE.LineBasicMaterial({ color: 0x39ff72 });
+        const nodeIndex = new Map(this.station.navNodes.map((node) => [node.id, node]));
+        const seen = new Set();
+        this.station.navEdges.forEach(([a, b]) => {
+            const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            const na = nodeIndex.get(a);
+            const nb = nodeIndex.get(b);
+            if (!na || !nb) return;
+            const geometry = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(na.x, 0.4, na.z),
+                new THREE.Vector3(nb.x, 0.4, nb.z),
+            ]);
+            this.group.add(new THREE.Line(geometry, material));
+        });
     }
 
     _buildColliderDebug() {

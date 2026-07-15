@@ -25,6 +25,13 @@ režim `?test=1`. Testovací API `window.__game` bez tohoto parametru neexistuje
 Composer je v testovacím režimu záměrně vypnutý a vizuály používají levnější
 profil; gameplay a kolize se nemění.
 
+Nové regresní testy (v4.2):
+- Unit `station-layout`: `validate()` + BFS start→každý modul na 9 levelech
+- E2E průchod ring→tunnel→module a zpět (`isInsideModule`) na všech modulech
+- E2E spawn multi-seed bez `insideCollider` + `rescueStuckEnemies`
+- E2E boss po `clearLivingEnemies` — spawn na dosažitelné aréně + HUD `#boss-warning`
+- Wall integrity (`checkWallIntegrity`) + absence `ring-trim`, přítomnost `hull-shell`
+
 Nové regresní testy (v4.1):
 - E2E skutečný keyboard vstup (`KeyW/A/S/D`) bez pointer locku v `?test=1`
 - Celistvost podlahy přes `window.__game.checkFloorIntegrity()` na všech 9 levelech

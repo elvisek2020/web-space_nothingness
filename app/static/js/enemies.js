@@ -8,7 +8,7 @@ import {
     SPAWN_SAFE_RADIUS,
     VISUALS,
 } from "./config.js";
-import { isInsideAnyCollider, moveWithSubsteps } from "./collision.js";
+import { gameplayColliders, isInsideAnyCollider, moveWithSubsteps } from "./collision.js";
 import {
     alertEnemiesBySound,
     buildColliderGrid,
@@ -55,7 +55,7 @@ export class EnemyManager {
     start() {
         this.started = true;
         this.graceRemaining = SPAWN_GRACE_SECONDS;
-        this.spatial = buildColliderGrid(this.world.colliders);
+        this.spatial = buildColliderGrid(gameplayColliders(this.world.colliders));
         this._spawnWave(this.levelConfig.enemies || {}, false);
         this._spawnWave(this.levelConfig.elite || {}, true);
         this._notifyCount();
@@ -133,14 +133,61 @@ export class EnemyManager {
             : definition.radius * 0.72;
         enemy.group.scale.setScalar(definition.boss ? 1.25 : 1);
         if (definition.ceilingStalker) enemy.group.userData.model.rotation.z = Math.PI;
+        this._rescueIfStuck(enemy);
         this.scene.add(enemy.group);
         this.enemies.push(enemy);
         this._notifyCount();
         return enemy;
     }
 
+    _navSpawnPool() {
+        const nodes = this.world.navNodes || [];
+        if (nodes.length) {
+            return nodes
+                .filter((node) => node.kind === "ring" || node.kind === "tunnel" || node.kind === "module")
+                .map((node) => new THREE.Vector3(node.x, 0, node.z));
+        }
+        return [...(this.world.spawnPoints || [])];
+    }
+
+    _rescueIfStuck(enemy) {
+        if (
+            enemy.definition.ceilingStalker
+            && (
+                enemy.stalkerState === STALKER_STATES.JUMP
+                || enemy.stalkerState === STALKER_STATES.WARNING
+                || enemy.stalkerState === STALKER_STATES.RETURN
+            )
+        ) {
+            return false;
+        }
+        const probe = Math.max(0.7, enemy.radius * 0.85);
+        const solid = gameplayColliders(this.world.colliders);
+        if (!isInsideAnyCollider(enemy.group.position, probe, solid)) return false;
+        const safe = this._pickSpawnPoint(enemy.definition);
+        if (!safe) return false;
+        enemy.group.position.x = safe.x;
+        enemy.group.position.z = safe.z;
+        if (!enemy.definition.ceilingStalker) {
+            enemy.group.position.y = enemy.definition.radius * 0.72;
+        }
+        if (isInsideAnyCollider(enemy.group.position, probe, solid)) {
+            console.warn("[ORION-9] enemy still inside collider after rescue", enemy.type);
+        }
+        return true;
+    }
+
+    rescueStuckEnemies() {
+        let rescued = 0;
+        this.enemies.forEach((enemy) => {
+            if (enemy.dead) return;
+            if (this._rescueIfStuck(enemy)) rescued += 1;
+        });
+        return rescued;
+    }
+
     _pickRandomSpawnPoints(count) {
-        const points = [...(this.world.spawnPoints || [])];
+        const points = [...this._navSpawnPool()];
         for (let index = points.length - 1; index > 0; index -= 1) {
             const swap = Math.floor(this._random() * (index + 1));
             [points[index], points[swap]] = [points[swap], points[index]];
@@ -154,14 +201,14 @@ export class EnemyManager {
             const spacingOk = chosen.every(
                 (existing) => Math.hypot(existing.x - point.x, existing.z - point.z) >= 3,
             );
-            const clear = !isInsideAnyCollider(point, 0.85, this.world.colliders);
+            const clear = !isInsideAnyCollider(point, 0.85, gameplayColliders(this.world.colliders));
             if (outsideSafe && spacingOk && clear) chosen.push(point.clone());
         });
         return chosen;
     }
 
     _pickSpawnPoint(definition) {
-        const points = this.world.spawnPoints || [];
+        const points = this._navSpawnPool();
         const start = this.world.playerStart;
         const probe = Math.max(0.7, definition.radius * 0.85);
         for (let attempt = 0; attempt < Math.max(points.length, 1) * 2; attempt += 1) {
@@ -171,7 +218,7 @@ export class EnemyManager {
             if (!point) break;
             const outsideSafeRadius = !start
                 || Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS;
-            const blocked = isInsideAnyCollider(point, probe, this.world.colliders);
+            const blocked = isInsideAnyCollider(point, probe, gameplayColliders(this.world.colliders));
             if (outsideSafeRadius && !blocked) {
                 return point.clone();
             }
@@ -179,16 +226,21 @@ export class EnemyManager {
         const candidates = points.filter((point) => {
             const outsideSafe = !start
                 || Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS;
-            return outsideSafe && !isInsideAnyCollider(point, probe, this.world.colliders);
+            return outsideSafe && !isInsideAnyCollider(
+                point,
+                probe,
+                gameplayColliders(this.world.colliders),
+            );
         });
         if (candidates.length) {
             return candidates.reduce((farthest, point) => (
                 point.distanceToSquared(start) > farthest.distanceToSquared(start) ? point : farthest
             )).clone();
         }
-        // Nudge outward from origin along the ring midradius.
+        const nav = this.world.navNodes?.find((node) => node.kind === "ring");
+        if (nav) return new THREE.Vector3(nav.x, 0, nav.z);
         const angle = Math.atan2(start?.x || 0, start?.z || 1) + Math.PI;
-        const r = (this.world.layout?.ringRadius ?? 20);
+        const r = (this.world.layout?.ringRadius ?? this.world.layoutGraph?.ring?.radius ?? 20);
         return new THREE.Vector3(Math.sin(angle) * r, 0, Math.cos(angle) * r);
     }
 
@@ -394,6 +446,7 @@ export class EnemyManager {
         const playerPosition = player.camera.position;
         this.enemies.forEach((enemy) => {
             if (enemy.dead) return;
+            this._rescueIfStuck(enemy);
             enemy.attackTimer -= delta;
             enemy.jumpTimer -= delta;
             enemy.hitTimer = Math.max(0, enemy.hitTimer - delta);
@@ -546,7 +599,7 @@ export class EnemyManager {
             { x: enemy.group.position.x, z: enemy.group.position.z },
             { x: movement.x, z: movement.z },
             radius,
-            this.world.colliders,
+            gameplayColliders(this.world.colliders),
             this.world.bounds,
             GAME_CONFIG.world.collisionSubstep,
         );
@@ -591,7 +644,12 @@ export class EnemyManager {
             if (
                 (
                     horizontalDistance <= definition.detectionRange
-                    && canEnemySeePlayer(enemy, player, this.world.colliders, this.spatial)
+                    && canEnemySeePlayer(
+                        enemy,
+                        player,
+                        gameplayColliders(this.world.colliders),
+                        this.spatial,
+                    )
                 )
                 || enemy.alertTimer > 0
             ) {
@@ -656,12 +714,16 @@ export class EnemyManager {
                     next.z - enemy.group.position.z,
                 ),
             );
-            enemy.group.position.y = clampBallisticY(next.y, floorY, ceilingY, enemy.radius);
+            // Clamp with floorY only (bossGroundY already includes stance height).
+            enemy.group.position.y = clampBallisticY(next.y, floorY, ceilingY, 0);
             model.rotation.z = Math.PI * (
                 1 - enemy.jumpElapsed / definition.jumpDuration
             );
             this._animate(enemy, elapsed * 2);
-            if (enemy.jumpElapsed >= definition.jumpDuration || enemy.group.position.y <= floorY) {
+            if (
+                enemy.jumpElapsed >= definition.jumpDuration - 1e-4
+                || enemy.group.position.y <= floorY + 0.05
+            ) {
                 enemy.group.position.y = floorY;
                 model.rotation.z = 0;
                 enemy.stalkerState = STALKER_STATES.GROUND;

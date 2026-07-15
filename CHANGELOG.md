@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## v4.2 — hotfix layout grafu (kořenová příčina v4.1 symptomů)
+
+### Diagnóza (ne symptomy)
+- Geometrie a navigace nebyly svázané: `floorPoints` / `bossArena.center=(0,0,0)` vs ad-hoc mesh.
+- Plná solid `tunnel-partition` blokovala vstup do modulů (vizuální portal nad kollidérem).
+- Okna bez outer collideru → díry ven; boss ve středu dutého torusu; žlutý `ring-trim` uprostřed decku.
+- Entity ve zdech: spawny mimo jednotný nav-graph; props (sudy, airlock) ucpávaly doky.
+
+### Opravy
+- **`station-layout.js`:** jediný zdroj pravdy — ring/modules/tunnels/openings, `navNodes`/`navEdges`, `validate()` + BFS, `bossAnchor` v dosahu.
+- **Doky:** dveřní rám (jambs + vizuální lintel bez XZ kollideru); výřez outer wall + hull u doků; end-cap modulů otevřený k tunelu.
+- **Hull shell:** pojistka mimo walkable (neblokuje pohyb v tunelu/modulu).
+- **Spawny:** kandidáti z `navNodes` + runtime rescue; sudy/props mimo dock clear zónu; airlock na ring mimo doky.
+- **Boss:** aréna = poslední modul layoutu; spawn + HUD ⚠ BOSS po vyčištění vlny.
+- Pryč produkční `ring-trim` uprostřed koridoru (kick-plate na stěnách).
+
+### Testy
+- Unit: `station-layout` validate/BFS na 9 levelech; floor/wall integrity.
+- E2E: průchod ring→každý modul a zpět; spawn multi-seed bez `insideCollider`; boss dostupný + HUD; floor/wall integrity.
+
 ## v4.1 — hotfix regresí po přestavbě stanice
 
 ### Proč regrese prošly zelenými testy
