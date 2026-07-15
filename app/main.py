@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.types import Scope
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -26,6 +27,15 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 VERSION_JSON = STATIC_DIR / "version.json"
 APP_NAME = os.getenv("APP_NAME", "Vetřelčí stanice")
+
+
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static assets with revalidation so deploys never mix ES module versions."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _positive_env_int(name: str, default: int) -> int:
@@ -93,7 +103,7 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
 
 
 def _top_scores(db: Session) -> list[Score]:

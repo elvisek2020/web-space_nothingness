@@ -25,6 +25,13 @@ režim `?test=1`. Testovací API `window.__game` bez tohoto parametru neexistuje
 Composer je v testovacím režimu záměrně vypnutý a vizuály používají levnější
 profil; gameplay a kolize se nemění.
 
+Nové regresní testy (v4.1):
+- E2E skutečný keyboard vstup (`KeyW/A/S/D`) bez pointer locku v `?test=1`
+- Celistvost podlahy přes `window.__game.checkFloorIntegrity()` na všech 9 levelech
+- Sustained fire: po warm-upu poolu `getFrameAllocations() === 0`
+- Unit OBB vs inflated AABB a `floor-walk` analytická mřížka
+- Pytest ověřuje `Cache-Control: no-cache` a `?v=` cache bust v HTML
+
 Jednotlivé vrstvy lze spustit samostatně:
 
 ```bash
@@ -64,6 +71,10 @@ npm run test:e2e
 - Po smrti i vítězství se leaderboard obnoví a zobrazí nejvýše deset položek.
 - Síťový panel neobsahuje požadavky na externí domény.
 
-Pro diagnostiku lze použít `/?debug=1`; růžové wireframy zobrazí AABB a overlay
-FPS, frame/render budgety i počet GPU resources. `window.__game.benchmark()`
-je dostupný pouze společně s `?test=1`.
+Pro diagnostiku lze použít `/?debug=1`; růžové wireframy zobrazí OBB a overlay
+FPS, `ALLOC`, stav kláves, `INSIDE` kollidér a pozici. Klávesa `0` přepíná
+top-down kameru pro kontrolu půdorysu. `window.__game.benchmark()` je dostupný
+pouze společně s `?test=1`.
+
+Statické assety se servírují s `Cache-Control: no-cache` a HTML odkazuje CSS/JS
+s `?v=<app_version>`, aby se po deployi nemíchaly staré a nové ES moduly.

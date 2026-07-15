@@ -6,8 +6,14 @@ import {
     createParticleBurst,
     createSmokeSprite,
     disposeObject3D,
+    getFrameAllocations,
     getVisuals,
+    noteAllocation,
+    resetFrameAllocations,
 } from "./visual-utils.js";
+
+const PROJECTILE_POOL_SIZE = 48;
+const SMOKE_POOL_SIZE = 12;
 
 export class Player {
     constructor(camera, scene, canvas, audio, callbacks = {}) {
@@ -24,6 +30,8 @@ export class Player {
         this.colliders = [];
         this.bounds = null;
         this.projectiles = [];
+        this.projectilePool = [];
+        this.smokePool = [];
         this.lastShot = -Infinity;
         this.weaponKick = 0;
         this.active = false;
@@ -38,6 +46,8 @@ export class Player {
         this.activeWeapon = "pulse";
         this.random = Math.random;
         this.visualEffects = [];
+        this._tmpDirection = new THREE.Vector3();
+        this._tmpPosition = new THREE.Vector3();
 
         this._onKeyDown = (event) => {
             this.keys.add(event.code);
@@ -71,6 +81,36 @@ export class Player {
         this.canvas.addEventListener("wheel", this._onWheel, { passive: false });
 
         this._createWeapon();
+        this._warmPools();
+    }
+
+    _warmPools() {
+        try {
+            getVisuals();
+        } catch {
+            return;
+        }
+        Object.keys(WEAPONS).forEach((type) => {
+            for (let index = 0; index < 16; index += 1) {
+                this._releaseProjectile(this._acquireProjectile(type));
+            }
+        });
+        for (let index = 0; index < 8; index += 1) {
+            this._releaseSmoke(this._acquireSmoke());
+        }
+        for (let index = 0; index < 6; index += 1) {
+            const burst = createParticleBurst(this.scene, {
+                position: this.camera.position,
+                count: 9,
+                life: 0.01,
+                speed: 0.01,
+                size: 0.05,
+                gravity: 0,
+                random: () => 0.5,
+            });
+            burst.dispose();
+        }
+        resetFrameAllocations();
     }
 
     _createWeapon() {
@@ -158,6 +198,7 @@ export class Player {
         this.weapon.position.set(0.38, -0.31, -0.58);
         this.weapon.rotation.set(-0.08, -0.12, 0);
         this.muzzleLight = new THREE.PointLight(colors[type], 0, 5, 2);
+        this.muzzleLight.castShadow = false;
         this.muzzleLight.position.set(0.04, 0.05, -1.24);
         this.weapon.add(this.muzzleLight);
         this.muzzleFlash = createGlowSprite(colors[type], 0.7, 0);
@@ -203,14 +244,115 @@ export class Player {
         this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
     }
 
+    getInputDebug() {
+        return {
+            keys: [...this.keys],
+            mouseHeld: this.mouseHeld,
+            yaw: this.yaw,
+            pitch: this.pitch,
+            insideCollider: this._blocked(
+                this.camera.position.x,
+                this.camera.position.z,
+                GAME_CONFIG.player.radius,
+            ),
+            position: {
+                x: this.camera.position.x,
+                y: this.camera.position.y,
+                z: this.camera.position.z,
+            },
+            allocations: getFrameAllocations(),
+        };
+    }
+
+    _projectileMaterial(type) {
+        const definition = WEAPONS[type];
+        return getVisuals().getMaterial(`projectile-mat-${type}`, () => new THREE.MeshStandardMaterial({
+            color: definition.color,
+            emissive: definition.color,
+            emissiveIntensity: VISUALS.emissive.projectileIntensity,
+            roughness: 0.12,
+            transparent: type === "flamethrower",
+            opacity: type === "flamethrower" ? 0.78 : 1,
+            toneMapped: true,
+        }));
+    }
+
+    _acquireProjectile(type) {
+        const pooled = this.projectilePool.find((item) => item.weapon === type);
+        if (pooled) {
+            this.projectilePool.splice(this.projectilePool.indexOf(pooled), 1);
+            pooled.dead = false;
+            pooled.mesh.visible = true;
+            return pooled;
+        }
+        noteAllocation(type === "flamethrower" ? 1 : 2);
+        const definition = WEAPONS[type];
+        const geometry = getVisuals().getGeometry(
+            `projectile-${type}`,
+            () => new THREE.SphereGeometry(definition.projectileRadius, 10, 8),
+        );
+        const mesh = new THREE.Mesh(geometry, this._projectileMaterial(type));
+        mesh.add(createGlowSprite(
+            definition.color,
+            type === "flamethrower" ? 0.72 : 0.48,
+            0.82,
+        ));
+        if (type !== "flamethrower") {
+            const light = new THREE.PointLight(definition.color, 4, 3, 2);
+            light.castShadow = false;
+            mesh.add(light);
+        }
+        return {
+            mesh,
+            previousPosition: new THREE.Vector3(),
+            velocity: new THREE.Vector3(),
+            life: 0,
+            damage: definition.damage,
+            radius: definition.projectileRadius,
+            weapon: type,
+            burnDamage: definition.burnDamage || 0,
+            burnDuration: definition.burnDuration || 0,
+            dead: false,
+        };
+    }
+
+    _releaseProjectile(projectile) {
+        projectile.mesh.visible = false;
+        projectile.mesh.removeFromParent();
+        projectile.dead = true;
+        if (this.projectilePool.length < PROJECTILE_POOL_SIZE) {
+            this.projectilePool.push(projectile);
+        } else {
+            disposeObject3D(projectile.mesh);
+        }
+    }
+
+    _acquireSmoke() {
+        if (this.smokePool.length) return this.smokePool.pop();
+        noteAllocation(1);
+        return createSmokeSprite(0.3, 0.42);
+    }
+
+    _releaseSmoke(sprite) {
+        sprite.removeFromParent();
+        if (this.smokePool.length < SMOKE_POOL_SIZE) {
+            sprite.material.opacity = 0;
+            this.smokePool.push(sprite);
+        } else {
+            disposeObject3D(sprite);
+        }
+    }
+
     update(delta, elapsed) {
         if (!this.active) return;
-        const direction = new THREE.Vector3();
+        resetFrameAllocations();
+        const direction = this._tmpDirection.set(0, 0, 0);
         if (this.keys.has("KeyW") || this.keys.has("ArrowUp")) direction.z -= 1;
         if (this.keys.has("KeyS") || this.keys.has("ArrowDown")) direction.z += 1;
         if (this.keys.has("KeyA") || this.keys.has("ArrowLeft")) direction.x -= 1;
         if (this.keys.has("KeyD") || this.keys.has("ArrowRight")) direction.x += 1;
-        if (direction.lengthSq() > 0) {
+        const moving = direction.lengthSq() > 0;
+        if (moving) {
             direction.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
             const movement = direction.multiplyScalar(
                 GAME_CONFIG.player.speed * Math.min(delta, 0.05),
@@ -221,7 +363,7 @@ export class Player {
             this.shoot(performance.now() / 1000);
         }
 
-        const bob = direction.lengthSq() > 0 ? Math.sin(elapsed * 10) * 0.012 : 0;
+        const bob = moving ? Math.sin(elapsed * 10) * 0.012 : 0;
         this.weaponKick = Math.max(0, this.weaponKick - delta * 5.5);
         this.weapon.position.y = -0.31 + bob;
         this.weapon.position.z = -0.58 + this.weaponKick * 0.12;
@@ -298,51 +440,32 @@ export class Player {
                 direction.z += (this.random() - 0.5) * definition.spread;
                 direction.normalize();
             }
-            const position = this.camera.position.clone().addScaledVector(direction, 0.8);
+            const position = this._tmpPosition
+                .copy(this.camera.position)
+                .addScaledVector(direction, 0.8);
             position.y -= 0.08;
-            const geometry = getVisuals().getGeometry(
-                `projectile-${this.activeWeapon}`,
-                () => new THREE.SphereGeometry(definition.projectileRadius, 10, 8),
-            );
-            const material = new THREE.MeshStandardMaterial({
-                color: definition.color,
-                emissive: definition.color,
-                emissiveIntensity: VISUALS.emissive.projectileIntensity,
-                roughness: 0.12,
-                transparent: this.activeWeapon === "flamethrower",
-                opacity: this.activeWeapon === "flamethrower" ? 0.78 : 1,
-                toneMapped: true,
-            });
-            const mesh = new THREE.Mesh(geometry, material);
-            mesh.position.copy(position);
-            mesh.add(createGlowSprite(
-                definition.color,
-                this.activeWeapon === "flamethrower" ? 0.72 : 0.48,
-                0.82,
-            ));
-            if (this.activeWeapon !== "flamethrower") {
-                mesh.add(new THREE.PointLight(definition.color, 4, 3, 2));
-            }
-            this.scene.add(mesh);
-            this.projectiles.push({
-                mesh,
-                previousPosition: position.clone(),
-                velocity: direction.multiplyScalar(definition.projectileSpeed),
-                life: definition.projectileLife,
-                damage: definition.damage,
-                radius: definition.projectileRadius,
-                weapon: this.activeWeapon,
-                burnDamage: definition.burnDamage || 0,
-                burnDuration: definition.burnDuration || 0,
-                dead: false,
-            });
+            const projectile = this._acquireProjectile(this.activeWeapon);
+            projectile.mesh.position.copy(position);
+            projectile.previousPosition.copy(position);
+            projectile.velocity.copy(direction).multiplyScalar(definition.projectileSpeed);
+            projectile.life = definition.projectileLife;
+            projectile.damage = definition.damage;
+            projectile.radius = definition.projectileRadius;
+            projectile.burnDamage = definition.burnDamage || 0;
+            projectile.burnDuration = definition.burnDuration || 0;
+            projectile.dead = false;
+            this.scene.add(projectile.mesh);
+            this.projectiles.push(projectile);
         }
         this._notifyWeapon();
         return true;
     }
 
     _spawnMuzzleSmoke() {
-        const sprite = createSmokeSprite(this.activeWeapon === "shotgun" ? 0.42 : 0.28, 0.42);
+        const sprite = this._acquireSmoke();
+        const scale = this.activeWeapon === "shotgun" ? 0.42 : 0.28;
+        sprite.scale.setScalar(scale);
+        sprite.material.opacity = 0.42;
         const position = this.weapon.localToWorld(this.muzzleLight.position.clone());
         sprite.position.copy(position);
         this.scene.add(sprite);
@@ -350,6 +473,7 @@ export class Player {
             .applyQuaternion(this.camera.quaternion)
             .multiplyScalar(0.7);
         direction.y += 0.28;
+        const player = this;
         this.visualEffects.push({
             object: sprite,
             velocity: direction,
@@ -362,7 +486,7 @@ export class Player {
                 return this.life > 0;
             },
             dispose() {
-                disposeObject3D(this.object);
+                player._releaseSmoke(this.object);
             },
         });
     }
@@ -408,7 +532,7 @@ export class Player {
     _removeDeadProjectiles() {
         this.projectiles = this.projectiles.filter((projectile) => {
             if (!projectile.dead) return true;
-            disposeObject3D(projectile.mesh);
+            this._releaseProjectile(projectile);
             return false;
         });
     }
@@ -511,7 +635,7 @@ export class Player {
     }
 
     clearProjectiles() {
-        this.projectiles.forEach((projectile) => disposeObject3D(projectile.mesh));
+        this.projectiles.forEach((projectile) => this._releaseProjectile(projectile));
         this.projectiles = [];
         this.visualEffects.forEach((effect) => effect.dispose());
         this.visualEffects = [];
@@ -520,6 +644,10 @@ export class Player {
     dispose() {
         this.active = false;
         this.clearProjectiles();
+        this.projectilePool.forEach((projectile) => disposeObject3D(projectile.mesh));
+        this.projectilePool = [];
+        this.smokePool.forEach((sprite) => disposeObject3D(sprite));
+        this.smokePool = [];
         window.removeEventListener("keydown", this._onKeyDown);
         window.removeEventListener("keyup", this._onKeyUp);
         document.removeEventListener("mousemove", this._onMouseMove);

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { PERCEPTION } from "./config.js";
-import { circleIntersectsAabb } from "./collision.js";
+import { circleIntersectsObb } from "./collision.js";
 
 const TWO_PI = Math.PI * 2;
 
@@ -67,7 +67,7 @@ export function hasLineOfSight(from, to, colliders, spatial = null) {
         const localColliders = spatial
             ? nearbyColliders(x, z, spatial, 4)
             : colliders;
-        if (localColliders.some((box) => circleIntersectsAabb(x, z, probeRadius, box))) {
+        if (localColliders.some((box) => circleIntersectsObb(x, z, probeRadius, box))) {
             return false;
         }
     }

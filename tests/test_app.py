@@ -121,6 +121,18 @@ def test_leaderboard_is_sorted_limited_and_escaped(client: TestClient):
     assert "&lt;script&gt;" in response.text
 
 
+def test_static_assets_send_no_cache_and_index_versions_urls(client: TestClient):
+    index = client.get("/")
+    assert index.status_code == 200
+    assert f"?v={APP_VERSION}" in index.text
+    assert "js/main.js" in index.text
+    assert "css/game.css" in index.text
+
+    response = client.get("/static/css/game.css")
+    assert response.status_code == 200
+    assert response.headers.get("cache-control") == "no-cache"
+
+
 def teardown_module():
     engine.dispose()
     Path(_test_db.name).unlink(missing_ok=True)

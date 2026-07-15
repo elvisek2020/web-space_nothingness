@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
     circleIntersectsAabb,
+    circleIntersectsObb,
     clampToBounds,
+    createCollider,
     moveWithSubsteps,
     resolveAxisSeparatedMove,
+    worldAabbFromObb,
 } from "../../app/static/js/collision.js";
 
 const wall = { minX: 1, maxX: 1.25, minZ: -2, maxZ: 2 };
@@ -41,5 +44,41 @@ describe("circle/AABB collision", () => {
             0.1,
         );
         expect(result.x).toBeLessThan(1);
+    });
+});
+
+describe("OBB collision", () => {
+    it("rotated thin wall does not block corridor center via inflated AABB", () => {
+        // Tangential wall on diagonal — world AABB hull is large, OBB stays thin.
+        const wall45 = createCollider({
+            id: "ring-outer",
+            type: "ring-outer",
+            cx: 16,
+            cz: 16,
+            halfW: 0.28,
+            halfD: 4.5,
+            yaw: Math.PI / 4,
+        });
+        const hull = worldAabbFromObb(16, 16, 0.28, 4.5, Math.PI / 4);
+        expect(hull.maxX - hull.minX).toBeGreaterThan(5);
+        // Point inward along the diagonal: free in OBB, inside inflated AABB hull.
+        expect(circleIntersectsObb(11, 11, 0.4, wall45)).toBe(false);
+        expect(circleIntersectsAabb(13.5, 13.5, 0.4, hull)).toBe(true);
+    });
+
+    it("detects contact against the local face of a yawed box", () => {
+        const box = createCollider({
+            id: "tunnel-wall",
+            type: "tunnel-wall",
+            cx: 0,
+            cz: 10,
+            halfW: 0.3,
+            halfD: 3,
+            yaw: Math.PI / 2,
+        });
+        // yaw=π/2: local Z aligns with world ±X, local X with world ∓Z.
+        expect(circleIntersectsObb(0, 10, 0.35, box)).toBe(true);
+        expect(circleIntersectsObb(0, 14, 0.35, box)).toBe(false);
+        expect(circleIntersectsObb(2.5, 10, 0.35, box)).toBe(true);
     });
 });

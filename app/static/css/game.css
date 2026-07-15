@@ -168,13 +168,13 @@ body.game-active .app-header {
 
 .menu-grid {
     display: grid;
-    grid-template-columns: minmax(280px, 1fr) minmax(720px, 900px);
+    grid-template-columns: 1fr 1fr;
     gap: 1.25rem;
-    align-items: start;
+    align-items: stretch;
     text-align: left;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 800px) {
     .menu-grid {
         grid-template-columns: 1fr;
     }
@@ -189,13 +189,60 @@ body.game-active .app-header {
 .leaderboard-wrap {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
-    padding: 1rem;
+    padding: 1.25rem 1.35rem;
     background: rgba(0, 0, 0, 0.2);
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+}
+
+.mission-brief h3 {
+    margin: 0 0 0.65rem;
+    color: var(--color-primary);
+    font-size: 1.05rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.mission-brief > p {
+    margin: 0 0 1rem;
+    line-height: 1.55;
+    color: var(--color-text-light);
+}
+
+.control-list {
+    list-style: none;
+    margin: 0 0 1.15rem;
+    padding: 0;
+    display: grid;
+    gap: 0.55rem;
+}
+
+.control-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.55rem;
+    line-height: 1.45;
+    font-size: 0.92rem;
+}
+
+.control-list kbd {
+    display: inline-block;
+    min-width: 1.6rem;
+    padding: 0.12rem 0.4rem;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.78rem;
+    text-align: center;
+    color: var(--color-primary);
 }
 
 .leaderboard-wrap {
-    min-width: min(720px, 100%);
-    max-width: 900px;
+    min-width: 0;
+    max-width: none;
     width: 100%;
 }
 

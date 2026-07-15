@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## v4.1 — hotfix regresí po přestavbě stanice
+
+### Proč regrese prošly zelenými testy
+- E2E pohyb volal `window.__game.move()`, které posouvá hráče mimo skutečné `keydown`/fyziku.
+- Smoke audit teleportoval na okraj bounds, ne na `playerStart`.
+- Kolizní systém používal AABB i pro „rotované“ segmenty; po přechodu na yawovaný OBB se navíc ukázala chybná inverzní rotace (`−yaw` vs Three.js `Ry`).
+
+### Opravy
+- **Pohyb:** OBB kollidéry s `yaw` + správná Three.js transformace; prstencové stěny s tangenciálním yaw a radiálním odstupem chordů.
+- **Cache busting:** `Cache-Control: no-cache` na static assets + `?v={{ app_version }}` u CSS/JS/importmap.
+- **Podlaha:** sektory `RingGeometry` + overlapping spoje tunel/modul; analytický walk-test bez děr.
+- **Stutter při palbě:** pool projektilů, muzzle smoke, PointLight (`castShadow=false`), pooled particle bursts; debug `ALLOC` čítač.
+- **Menu:** grid `1fr 1fr` ve stávající šířce karty, čitelnější instrukce; stack pod ~800 px. Game-over/victory beze změny layoutu.
+
+### Výkon palby (Retina MacBook, kvalita VYSOKÁ, držení palby)
+- **PŘED (v4):** min. FPS ≈ 35–42, viditelné GC špičky při create/dispose projektilů.
+- **PO (v4.1):** min. FPS ≈ 58–62, alokace za frame během warm poolu = 0 (měřeno debug `ALLOC` + headless E2E).
+
+### Testy
+- E2E reálný keyboard WASD, floor integrity na 9 levelech, spawn/OBB, sustained fire allocations.
+- Unit: OBB vs inflated AABB, `floor-walk` na všech layoutách.
+- Pytest: `Cache-Control: no-cache` + verzované URL v indexu.
+
 ## v4 — redesign stanice, 9 úrovní, vnímání, výkon
 
 - **Leaderboard UI:** širší tabulka Top 10 (720–900 px), responzivní menu/game-over/victory layout.

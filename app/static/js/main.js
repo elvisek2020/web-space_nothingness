@@ -13,13 +13,19 @@ import { submitScore, refreshLeaderboards } from "./api.js";
 import { GameAudio } from "./audio.js";
 import { BarrelManager } from "./barrels.js";
 import { isInsideAnyCollider } from "./collision.js";
+import { findFloorHoles } from "./floor-walk.js";
 import { EnemyManager } from "./enemies.js";
 import { Hud } from "./hud.js";
 import { LevelBuilder, seededRandom } from "./levels.js";
 import { PickupManager } from "./pickups.js";
 import { Player } from "./player.js";
 import { RenderingPipeline } from "./rendering.js";
-import { disposeVisuals, initializeVisuals } from "./visual-utils.js";
+import {
+    disposeVisuals,
+    getFrameAllocations,
+    initializeVisuals,
+    resetFrameAllocations,
+} from "./visual-utils.js";
 import {
     AirlockSystem,
     OxygenSystem,
@@ -66,6 +72,8 @@ let gameOverReason = "ORION-9 zůstává v karanténě.";
 let lastTimeBonus = 0;
 let debugFrames = 0;
 let debugElapsed = 0;
+let topDownCamera = false;
+let perspectiveBackup = null;
 
 function runtimeQuality() {
     return TEST_MODE ? "low" : quality;
@@ -159,6 +167,25 @@ function setupLevel(index, freshRun = false, spawnEnemies = !TEST_MODE) {
     world = levelBuilder.build();
     rendering?.markShadowsDirty();
     applyBrightness();
+
+    if (isInsideAnyCollider(world.playerStart, GAME_CONFIG.player.radius, world.colliders)) {
+        console.warn("[ORION-9] playerStart is inside a collider", {
+            start: { x: world.playerStart.x, z: world.playerStart.z },
+            level: config.number,
+        });
+    }
+    if (DEBUG_MODE) {
+        console.info("[ORION-9] level ready", {
+            level: config.number,
+            seed: levelSeed,
+            insideCollider: isInsideAnyCollider(
+                world.playerStart,
+                GAME_CONFIG.player.radius,
+                world.colliders,
+            ),
+            colliders: world.colliders.length,
+        });
+    }
 
     if (freshRun) {
         rescuedSurvivors = 0;
@@ -446,6 +473,36 @@ function animate() {
     updateDebugStats(delta);
 }
 
+function toggleTopDownCamera() {
+    if (!camera || !world) return;
+    topDownCamera = !topDownCamera;
+    if (topDownCamera) {
+        perspectiveBackup = {
+            fov: camera.fov,
+            near: camera.near,
+            far: camera.far,
+            position: camera.position.clone(),
+            rotation: camera.rotation.clone(),
+        };
+        const extent = Math.max(
+            world.bounds.maxX - world.bounds.minX,
+            world.bounds.maxZ - world.bounds.minZ,
+        );
+        camera.position.set(0, Math.max(40, extent), 0);
+        camera.rotation.set(-Math.PI / 2, 0, 0, "YXZ");
+        camera.fov = 50;
+        camera.updateProjectionMatrix();
+    } else if (perspectiveBackup) {
+        camera.fov = perspectiveBackup.fov;
+        camera.near = perspectiveBackup.near;
+        camera.far = perspectiveBackup.far;
+        camera.position.copy(perspectiveBackup.position);
+        camera.rotation.copy(perspectiveBackup.rotation);
+        camera.updateProjectionMatrix();
+        perspectiveBackup = null;
+    }
+}
+
 function updateDebugStats(delta) {
     if (!DEBUG_MODE || !rendering) return;
     debugFrames += 1;
@@ -453,12 +510,16 @@ function updateDebugStats(delta) {
     if (debugElapsed < 0.5) return;
     const fps = Math.round(debugFrames / debugElapsed);
     const stats = rendering.getStats();
+    const input = player?.getInputDebug?.() || {};
     document.getElementById("render-stats").textContent = [
-        `FPS ${String(fps).padStart(3, " ")}`,
+        `FPS ${String(fps).padStart(3, " ")} · ALLOC ${getFrameAllocations()}`,
         `${stats.quality.toUpperCase()} · ${stats.composer ? "COMPOSER" : "DIRECT"}`,
         `CALLS ${stats.calls} · TRI ${stats.triangles}`,
         `GEO ${stats.geometries} · TEX ${stats.textures}`,
         `SSAO ${stats.ssao ? "ON" : "OFF"} · SHADOW ${stats.shadows ? "ON" : "OFF"}`,
+        `KEYS ${(input.keys || []).join(",") || "-"} · INSIDE ${input.insideCollider ? "YES" : "no"}`,
+        `POS ${input.position ? `${input.position.x.toFixed(1)},${input.position.z.toFixed(1)}` : "-"}`,
+        `TOPDOWN ${topDownCamera ? "ON (0)" : "off (0)"}`,
     ].join("\n");
     debugFrames = 0;
     debugElapsed = 0;
@@ -524,7 +585,12 @@ function initUi() {
         applyBrightness();
     });
     document.addEventListener("pointerlockchange", handlePointerLock);
-    if (DEBUG_MODE) document.getElementById("render-stats").classList.remove("hidden");
+    if (DEBUG_MODE) {
+        document.getElementById("render-stats").classList.remove("hidden");
+        window.addEventListener("keydown", (event) => {
+            if (event.code === "Digit0" && !event.repeat) toggleTopDownCamera();
+        });
+    }
     window.addEventListener("beforeunload", () => {
         disposeVisuals();
         rendering?.dispose();
@@ -578,6 +644,28 @@ function exposeTestApi() {
         },
         getPlayerPos() {
             return { x: player.camera.position.x, z: player.camera.position.z };
+        },
+        getPlayerStart() {
+            return { x: world.playerStart.x, y: world.playerStart.y, z: world.playerStart.z };
+        },
+        isPlayerStartBlocked() {
+            return isInsideAnyCollider(
+                world.playerStart,
+                GAME_CONFIG.player.radius,
+                world.colliders,
+            );
+        },
+        getInputDebug: () => player.getInputDebug(),
+        getFrameAllocations: () => getFrameAllocations(),
+        resetFrameAllocations: () => resetFrameAllocations(),
+        shoot(now = performance.now() / 1000) {
+            return player.shoot(now);
+        },
+        checkFloorIntegrity(options = {}) {
+            return findFloorHoles(
+                { ...world.layout, modules: world.layout.modules || [] },
+                options,
+            );
         },
         setPlayerPos(x, z) {
             const radius = GAME_CONFIG.player.radius;

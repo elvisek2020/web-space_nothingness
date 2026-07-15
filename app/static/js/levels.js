@@ -10,6 +10,8 @@ import {
     STATION_DEFAULTS,
     VISUALS,
 } from "./config.js";
+import { createCollider, circleIntersectsObb } from "./collision.js";
+import { isOnWalkableFloor } from "./floor-walk.js";
 import { createSmokeSprite, disposeObject3D, getVisuals } from "./visual-utils.js";
 
 export function seededRandom(seed) {
@@ -32,6 +34,7 @@ export class LevelBuilder {
         this.spawnPoints = [];
         this.pickupPoints = [];
         this.floorPoints = [];
+        this.floorMeshes = [];
         this.moduleCenters = [];
         this.random = seededRandom(options.seed ?? config.number * 9137);
         this.seed = options.seed ?? config.number * 9137;
@@ -70,6 +73,8 @@ export class LevelBuilder {
             spawnPoints: this.spawnPoints,
             pickupPoints: this.pickupPoints,
             floorPoints: this.floorPoints,
+            floorMeshes: this.floorMeshes,
+            layout: { ...this.layout },
             bounds: { ...this.bounds },
             playerStart: this._playerStart(),
             floorY: this.floorY,
@@ -117,23 +122,55 @@ export class LevelBuilder {
         this.bounds.maxZ = Math.max(this.bounds.maxZ, z + margin);
     }
 
-    _box(name, x, y, z, width, height, depth, material, solid = true) {
+    _box(name, x, y, z, width, height, depth, material, solid = true, yaw = 0) {
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
         mesh.name = name;
         mesh.position.set(x, y, z);
+        mesh.rotation.y = yaw;
         mesh.castShadow = this.quality === "high";
         mesh.receiveShadow = true;
         this.group.add(mesh);
         if (solid) {
-            this.colliders.push({
+            this.colliders.push(createCollider({
                 id: `${name}-${this.colliders.length}`,
                 type: name,
-                minX: x - width / 2,
-                maxX: x + width / 2,
-                minZ: z - depth / 2,
-                maxZ: z + depth / 2,
-            });
+                cx: x,
+                cz: z,
+                halfW: width / 2,
+                halfD: depth / 2,
+                yaw,
+            }));
         }
+        return mesh;
+    }
+
+    _addFloorSector(material, innerRadius, outerRadius, thetaStart, thetaLength) {
+        const overlap = 0.025;
+        // Map station angle (x=sin θ, z=cos θ) onto RingGeometry after rotateX.
+        const geometry = new THREE.RingGeometry(
+            innerRadius,
+            outerRadius,
+            Math.max(8, Math.ceil(thetaLength * 14)),
+            1,
+            thetaStart - Math.PI / 2 - overlap,
+            thetaLength + overlap * 2,
+        );
+        geometry.rotateX(-Math.PI / 2);
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = "ring-floor";
+        mesh.position.y = FLOOR_Y;
+        mesh.receiveShadow = true;
+        mesh.castShadow = false;
+        mesh.userData.walkable = true;
+        this.group.add(mesh);
+        this.floorMeshes.push(mesh);
+        return mesh;
+    }
+
+    _addOrientedFloor(name, x, z, width, depth, material, yaw, y = FLOOR_Y - 0.05) {
+        const mesh = this._box(name, x, y, z, width, 0.4, depth, material, false, yaw);
+        mesh.userData.walkable = true;
+        this.floorMeshes.push(mesh);
         return mesh;
     }
 
@@ -154,9 +191,10 @@ export class LevelBuilder {
                     wallZ,
                     0.55,
                     MIN_CEILING,
-                    step * 0.92,
+                    step * 0.98,
                     material,
                     solid,
+                    angle,
                 );
             }
         }
@@ -174,18 +212,17 @@ export class LevelBuilder {
         const inner = ringRadius - corridorWidth / 2;
         const outer = ringRadius + corridorWidth / 2;
         const arcLen = (Math.PI * 2 * ringRadius) / ringSegments;
+        const thetaStep = (Math.PI * 2) / ringSegments;
 
         for (let index = 0; index < ringSegments; index += 1) {
             const angle = (index / ringSegments) * Math.PI * 2;
-            const cx = Math.sin(angle) * ringRadius;
-            const cz = Math.cos(angle) * ringRadius;
-            const nextAngle = ((index + 1) / ringSegments) * Math.PI * 2;
-            const nx = Math.sin(nextAngle) * ringRadius;
-            const nz = Math.cos(nextAngle) * ringRadius;
-            const midX = (cx + nx) / 2;
-            const midZ = (cz + nz) / 2;
-            const segAngle = Math.atan2(nx - cx, nz - cz);
-            this._box("ring-floor", midX, FLOOR_Y - 0.2, midZ, corridorWidth - 0.4, 0.45, arcLen * 1.05, floor, false);
+            const midAngle = angle + thetaStep / 2;
+            const midX = Math.sin(midAngle) * ringRadius;
+            const midZ = Math.cos(midAngle) * ringRadius;
+            // Tangential yaw: box local +Z follows the ring tangent.
+            const yaw = midAngle;
+
+            this._addFloorSector(floor, inner, outer, angle, thetaStep);
             this._expandBounds(midX, midZ, corridorWidth);
 
             if (index % 3 === 1) {
@@ -199,38 +236,52 @@ export class LevelBuilder {
                     }),
                 );
                 window.position.set(
-                    Math.sin(angle) * (outer + 0.05),
+                    Math.sin(midAngle) * (outer + 0.05),
                     MIN_CEILING * 0.55,
-                    Math.cos(angle) * (outer + 0.05),
+                    Math.cos(midAngle) * (outer + 0.05),
                 );
                 window.lookAt(0, window.position.y, 0);
                 this.group.add(window);
             } else {
+                // yaw=midAngle: local X = tangent, local Z = radial → long side is width.
                 this._box(
                     "ring-outer",
-                    Math.sin(angle) * outer,
+                    Math.sin(midAngle) * (outer + 0.2),
                     MIN_CEILING / 2,
-                    Math.cos(angle) * outer,
-                    0.55,
+                    Math.cos(midAngle) * (outer + 0.2),
+                    arcLen * 1.02,
                     MIN_CEILING,
-                    arcLen * 0.95,
+                    0.55,
                     wall,
                     true,
+                    yaw,
                 );
             }
 
             this._box(
                 "ring-inner",
-                Math.sin(angle) * inner,
+                Math.sin(midAngle) * (inner - 0.2),
                 MIN_CEILING / 2,
-                Math.cos(angle) * inner,
-                0.55,
+                Math.cos(midAngle) * (inner - 0.2),
+                arcLen * 1.02,
                 MIN_CEILING,
-                arcLen * 0.95,
+                0.55,
                 wall,
                 true,
+                yaw,
             );
-            this._box("ring-trim", midX, 0.35, midZ, 0.12, 0.12, arcLen * 0.9, trim, false);
+            this._box(
+                "ring-trim",
+                midX,
+                0.35,
+                midZ,
+                arcLen * 0.95,
+                0.12,
+                0.12,
+                trim,
+                false,
+                yaw,
+            );
         }
 
         this._box("ring-ceiling", 0, MIN_CEILING + 0.15, 0, outer * 2.2, 0.35, outer * 2.2, wall, false);
@@ -239,13 +290,22 @@ export class LevelBuilder {
     _buildDockTunnel(angle) {
         const wall = this._texturedMaterial("wall", 2, 2, VISUALS.materials.wall);
         const floor = this._texturedMaterial("floor", 2, 2, VISUALS.materials.floor);
-        const { ringRadius, tunnelLength, tunnelWidth, partitionDepth } = this.layout;
-        const startR = ringRadius + this.layout.corridorWidth / 2 - 0.5;
+        const { ringRadius, tunnelLength, tunnelWidth, partitionDepth, corridorWidth } = this.layout;
+        const startR = ringRadius + corridorWidth / 2 - 0.5;
         const endR = startR + tunnelLength;
         const midR = (startR + endR) / 2;
         const cx = Math.sin(angle) * midR;
         const cz = Math.cos(angle) * midR;
-        this._box("tunnel-floor", cx, FLOOR_Y - 0.18, cz, tunnelWidth, 0.4, tunnelLength, floor, false);
+        // Overlap into ring and module to seal seams.
+        this._addOrientedFloor(
+            "tunnel-floor",
+            cx,
+            cz,
+            tunnelWidth + 0.35,
+            tunnelLength + 1.1,
+            floor,
+            angle,
+        );
         this._addCylindricalWalls("tunnel", cx, cz, tunnelWidth / 2, tunnelLength, angle, wall, true);
         const partitionR = startR + partitionDepth;
         const px = Math.sin(angle) * partitionR;
@@ -260,6 +320,7 @@ export class LevelBuilder {
             0.55,
             wall,
             true,
+            angle,
         );
         const portal = new THREE.Mesh(
             new THREE.RingGeometry(tunnelWidth * 0.32, tunnelWidth * 0.42, 16),
@@ -283,7 +344,15 @@ export class LevelBuilder {
         const cx = Math.sin(angle) * centerR;
         const cz = Math.cos(angle) * centerR;
         this.moduleCenters.push(new THREE.Vector3(cx, GAME_CONFIG.player.height, cz));
-        this._box("module-floor", cx, FLOOR_Y - 0.2, cz, moduleRadius * 2, 0.45, moduleLength, floor, false);
+        this._addOrientedFloor(
+            "module-floor",
+            cx,
+            cz,
+            moduleRadius * 2 + 0.4,
+            moduleLength + 0.8,
+            floor,
+            angle,
+        );
         this._addCylindricalWalls("module", cx, cz, moduleRadius, moduleLength, angle, wall, true);
         this._expandBounds(cx, cz, moduleRadius + 2);
 
@@ -293,8 +362,8 @@ export class LevelBuilder {
             const offset = -moduleLength / 2 + 2 + index * (moduleLength / (rackCount + 1));
             const rx = cx + Math.sin(angle) * offset + Math.cos(angle) * side * (moduleRadius - 1.1);
             const rz = cz + Math.cos(angle) * offset - Math.sin(angle) * side * (moduleRadius - 1.1);
-            this._box("module-rack", rx, 1.1, rz, 1.4, 2.2, 0.65, prop, true);
-            this._box("module-rail", rx, 0.9, rz - side * 0.5, 0.08, 0.08, 1.2, wall, false);
+            this._box("module-rack", rx, 1.1, rz, 1.4, 2.2, 0.65, prop, true, angle);
+            this._box("module-rail", rx, 0.9, rz - side * 0.5, 0.08, 0.08, 1.2, wall, false, angle);
         }
 
         if (type === "cupola" || type === "greenhouse") {
@@ -319,7 +388,7 @@ export class LevelBuilder {
                     const panelAngle = angle + (index - 1.5) * 0.35;
                     const px = cx + Math.sin(panelAngle) * (centerR + 2.5);
                     const pz = cz + Math.cos(panelAngle) * (centerR + 2.5);
-                    this._box("solar-panel", px, MIN_CEILING + 1.2, pz, 2.2, 0.08, 1.4, prop, false);
+                    this._box("solar-panel", px, MIN_CEILING + 1.2, pz, 2.2, 0.08, 1.4, prop, false, panelAngle);
                 }
             }
         }
@@ -361,14 +430,15 @@ export class LevelBuilder {
         hull.rotation.z = Math.PI / 4;
         hull.position.set(cx, 1.5, cz + 3);
         this.group.add(hull);
-        this.colliders.push({
+        this.colliders.push(createCollider({
             id: "hangar-ship",
             type: "ship",
-            minX: cx - 5,
-            maxX: cx + 5,
-            minZ: cz - 2,
-            maxZ: cz + 8,
-        });
+            cx,
+            cz: cz + 3,
+            halfW: 5,
+            halfD: 5,
+            yaw: 0,
+        }));
     }
 
     _addLabTubes(cx, cz, angle) {
@@ -385,14 +455,15 @@ export class LevelBuilder {
             const tube = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 3.4, 10), glass);
             tube.position.set(tx, 1.7, tz);
             this.group.add(tube);
-            this.colliders.push({
+            this.colliders.push(createCollider({
                 id: `lab-tube-${side}`,
                 type: "lab-tube",
-                minX: tx - 1.2,
-                maxX: tx + 1.2,
-                minZ: tz - 1.2,
-                maxZ: tz + 1.2,
-            });
+                cx: tx,
+                cz: tz,
+                halfW: 1.2,
+                halfD: 1.2,
+                yaw: 0,
+            }));
         }
     }
 
@@ -408,14 +479,37 @@ export class LevelBuilder {
 
     _buildStartBay() {
         const start = this._playerStart();
+        const angle = (this.layout.modules?.[0]?.angle ?? 0) + Math.PI;
         const frame = this._material(0x263239, { metalness: 0.82, roughness: 0.3 });
         const marker = this._texturedMaterial("hazard", 2, 1, { metalness: 0.34, roughness: 0.58 });
         for (const side of [-1, 1]) {
-            this._box("start-bay-side", start.x + side * 3.2, MIN_CEILING / 2, start.z, 0.18, MIN_CEILING * 0.95, 4.5, frame, false);
+            this._box(
+                "start-bay-side",
+                start.x + Math.cos(angle) * side * 3.2,
+                MIN_CEILING / 2,
+                start.z - Math.sin(angle) * side * 3.2,
+                0.18,
+                MIN_CEILING * 0.95,
+                4.5,
+                frame,
+                false,
+                angle,
+            );
         }
-        this._box("start-bay-canopy", start.x, MIN_CEILING - 0.35, start.z, 6.8, 0.2, 4.5, frame, false);
+        this._box("start-bay-canopy", start.x, MIN_CEILING - 0.35, start.z, 6.8, 0.2, 4.5, frame, false, angle);
         for (const offset of [-2.4, 2.4]) {
-            this._box("start-bay-marker", start.x + offset, 0.045, start.z, 0.55, 0.05, 0.9, marker, false);
+            this._box(
+                "start-bay-marker",
+                start.x + Math.cos(angle) * offset,
+                0.045,
+                start.z - Math.sin(angle) * offset,
+                0.55,
+                0.05,
+                0.9,
+                marker,
+                false,
+                angle,
+            );
         }
     }
 
@@ -485,7 +579,10 @@ export class LevelBuilder {
         const step = 2;
         for (let x = this.bounds.minX + 1; x <= this.bounds.maxX - 1; x += step) {
             for (let z = this.bounds.minZ + 1; z <= this.bounds.maxZ - 1; z += step) {
-                if (!this._pointBlocked(x, z, 0.85)) {
+                if (!isOnWalkableFloor(x, z, { ...this.layout, modules: this.layout.modules || [] })) {
+                    continue;
+                }
+                if (!this._pointBlocked(x, z, 1.1)) {
                     this.floorPoints.push(new THREE.Vector3(x, 0, z));
                 }
             }
@@ -551,6 +648,7 @@ export class LevelBuilder {
                     emissiveIntensity: 0.55,
                 }),
                 true,
+                airlockAngle,
             ).userData.interaction = "airlock";
         }
 
@@ -614,24 +712,20 @@ export class LevelBuilder {
     _buildColliderDebug() {
         const material = new THREE.LineBasicMaterial({ color: 0xff35d3 });
         this.colliders.forEach((box) => {
-            const width = box.maxX - box.minX;
-            const depth = box.maxZ - box.minZ;
+            const halfW = box.halfW ?? (box.maxX - box.minX) / 2;
+            const halfD = box.halfD ?? (box.maxZ - box.minZ) / 2;
             const helper = new THREE.LineSegments(
-                new THREE.EdgesGeometry(new THREE.BoxGeometry(width, 2.2, depth)),
+                new THREE.EdgesGeometry(new THREE.BoxGeometry(halfW * 2, 2.2, halfD * 2)),
                 material,
             );
-            helper.position.set((box.minX + box.maxX) / 2, 1.1, (box.minZ + box.maxZ) / 2);
+            helper.position.set(box.cx ?? (box.minX + box.maxX) / 2, 1.1, box.cz ?? (box.minZ + box.maxZ) / 2);
+            helper.rotation.y = box.yaw ?? 0;
             this.group.add(helper);
         });
     }
 
     _pointBlocked(x, z, padding) {
-        return this.colliders.some(
-            (box) => x > box.minX - padding
-                && x < box.maxX + padding
-                && z > box.minZ - padding
-                && z < box.maxZ + padding,
-        );
+        return this.colliders.some((box) => circleIntersectsObb(x, z, padding, box));
     }
 
     _finalizeBounds() {

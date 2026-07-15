@@ -24,6 +24,7 @@ a procedurální zvuky. Za běhu nevyžaduje žádné CDN ani externí služby.
 - bezpečný start každé sekce a stropní lovci s balistickým přepadem,
 - top 10 leaderboard uložený v SQLite,
 - FastAPI + Jinja2 + HTMX, lokálně uložené Three.js a HTMX,
+- cache busting: `Cache-Control: no-cache` + `?v=` u assetů (žádný mix starých/nových ES modulů),
 - non-root Docker image s healthcheckem.
 
 ## Lokální spuštění

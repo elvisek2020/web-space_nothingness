@@ -27,6 +27,7 @@ import {
     createGlowSprite,
     createParticleBurst,
     disposeObject3D,
+    getVisuals,
 } from "./visual-utils.js";
 
 export class EnemyManager {
@@ -39,6 +40,7 @@ export class EnemyManager {
         this.callbacks = callbacks;
         this.enemies = [];
         this.acidProjectiles = [];
+        this.acidPool = [];
         this.effects = [];
         this.bossSpawned = false;
         this.bossDefeated = false;
@@ -152,7 +154,8 @@ export class EnemyManager {
             const spacingOk = chosen.every(
                 (existing) => Math.hypot(existing.x - point.x, existing.z - point.z) >= 3,
             );
-            if (outsideSafe && spacingOk) chosen.push(point.clone());
+            const clear = !isInsideAnyCollider(point, 0.85, this.world.colliders);
+            if (outsideSafe && spacingOk && clear) chosen.push(point.clone());
         });
         return chosen;
     }
@@ -160,25 +163,33 @@ export class EnemyManager {
     _pickSpawnPoint(definition) {
         const points = this.world.spawnPoints || [];
         const start = this.world.playerStart;
-        for (let attempt = 0; attempt < points.length; attempt += 1) {
-            const point = points[this.spawnCursor++ % points.length];
+        const probe = Math.max(0.7, definition.radius * 0.85);
+        for (let attempt = 0; attempt < Math.max(points.length, 1) * 2; attempt += 1) {
+            const point = points.length
+                ? points[this.spawnCursor++ % points.length]
+                : null;
+            if (!point) break;
             const outsideSafeRadius = !start
                 || Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS;
-            const blocked = isInsideAnyCollider(
-                point,
-                definition.radius * 0.75,
-                this.world.colliders,
-            );
+            const blocked = isInsideAnyCollider(point, probe, this.world.colliders);
             if (outsideSafeRadius && !blocked) {
-                return point;
+                return point.clone();
             }
         }
-        if (points.length) {
-            return points.reduce((farthest, point) => (
+        const candidates = points.filter((point) => {
+            const outsideSafe = !start
+                || Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS;
+            return outsideSafe && !isInsideAnyCollider(point, probe, this.world.colliders);
+        });
+        if (candidates.length) {
+            return candidates.reduce((farthest, point) => (
                 point.distanceToSquared(start) > farthest.distanceToSquared(start) ? point : farthest
-            ));
+            )).clone();
         }
-        return new THREE.Vector3(0, 0, this.world.bounds.minZ + 4);
+        // Nudge outward from origin along the ring midradius.
+        const angle = Math.atan2(start?.x || 0, start?.z || 1) + Math.PI;
+        const r = (this.world.layout?.ringRadius ?? 20);
+        return new THREE.Vector3(Math.sin(angle) * r, 0, Math.cos(angle) * r);
     }
 
     _createModel(type, definition, elite = false) {
@@ -739,33 +750,61 @@ export class EnemyManager {
         enemy.group.rotation.z = Math.sin(pulse * 0.35) * 0.04;
     }
 
+    _acquireAcid(boss) {
+        const key = boss ? "boss" : "normal";
+        const pooled = this.acidPool.find((item) => item.key === key);
+        if (pooled) {
+            this.acidPool.splice(this.acidPool.indexOf(pooled), 1);
+            pooled.mesh.visible = true;
+            return pooled;
+        }
+        const radius = boss ? 0.24 : 0.17;
+        const material = getVisuals().getMaterial("acid-projectile", () => new THREE.MeshStandardMaterial({
+            color: 0xd8ff62,
+            emissive: 0x79ff19,
+            emissiveIntensity: VISUALS.emissive.projectileIntensity,
+            roughness: 0.18,
+            toneMapped: true,
+        }));
+        const mesh = new THREE.Mesh(
+            getVisuals().getGeometry(`acid-${key}`, () => new THREE.SphereGeometry(radius, 7, 6)),
+            material,
+        );
+        mesh.add(createGlowSprite(0x8dff1f, boss ? 1.2 : 0.8, 0.8));
+        if (this.quality === "high") {
+            const light = new THREE.PointLight(0x8dff1f, 3, 2.5);
+            light.castShadow = false;
+            mesh.add(light);
+        }
+        return {
+            key,
+            mesh,
+            velocity: new THREE.Vector3(),
+            life: 0,
+            damage: 0,
+            radius: boss ? 0.35 : 0.25,
+        };
+    }
+
+    _releaseAcid(projectile) {
+        projectile.mesh.visible = false;
+        projectile.mesh.removeFromParent();
+        if (this.acidPool.length < 32) this.acidPool.push(projectile);
+        else disposeObject3D(projectile.mesh);
+    }
+
     _fireAcid(enemy, target) {
         const count = enemy.definition.burst || 1;
         for (let index = 0; index < count; index += 1) {
-            const mesh = new THREE.Mesh(
-                new THREE.SphereGeometry(enemy.definition.boss ? 0.24 : 0.17, 7, 6),
-                new THREE.MeshStandardMaterial({
-                    color: 0xd8ff62,
-                    emissive: 0x79ff19,
-                    emissiveIntensity: VISUALS.emissive.projectileIntensity,
-                    roughness: 0.18,
-                    toneMapped: true,
-                }),
-            );
-            mesh.position.copy(enemy.group.position).add(new THREE.Vector3(0, 0.5, 0));
-            const direction = target.clone().sub(mesh.position).normalize();
+            const projectile = this._acquireAcid(Boolean(enemy.definition.boss));
+            projectile.mesh.position.copy(enemy.group.position).add(new THREE.Vector3(0, 0.5, 0));
+            const direction = target.clone().sub(projectile.mesh.position).normalize();
             if (count > 1) direction.applyAxisAngle(new THREE.Vector3(0, 1, 0), (index - 1) * 0.12);
-            const glow = createGlowSprite(0x8dff1f, enemy.definition.boss ? 1.2 : 0.8, 0.8);
-            mesh.add(glow);
-            if (this.quality === "high") mesh.add(new THREE.PointLight(0x8dff1f, 3, 2.5));
-            this.scene.add(mesh);
-            this.acidProjectiles.push({
-                mesh,
-                velocity: direction.multiplyScalar(enemy.definition.boss ? 11 : 8),
-                life: 4,
-                damage: enemy.definition.damage,
-                radius: enemy.definition.boss ? 0.35 : 0.25,
-            });
+            projectile.velocity.copy(direction).multiplyScalar(enemy.definition.boss ? 11 : 8);
+            projectile.life = 4;
+            projectile.damage = enemy.definition.damage;
+            this.scene.add(projectile.mesh);
+            this.acidProjectiles.push(projectile);
         }
         this.audio?.alienCry(false);
     }
@@ -791,7 +830,7 @@ export class EnemyManager {
         });
         this.acidProjectiles = this.acidProjectiles.filter((projectile) => {
             if (projectile.life > 0) return true;
-            disposeObject3D(projectile.mesh);
+            this._releaseAcid(projectile);
             return false;
         });
     }
@@ -1038,10 +1077,10 @@ export class EnemyManager {
             disposeObject3D(enemy.group);
         });
         this.enemies = [];
-        this.acidProjectiles.forEach((projectile) => {
-            disposeObject3D(projectile.mesh);
-        });
+        this.acidProjectiles.forEach((projectile) => this._releaseAcid(projectile));
         this.acidProjectiles = [];
+        this.acidPool.forEach((projectile) => disposeObject3D(projectile.mesh));
+        this.acidPool = [];
         this.effects.forEach((effect) => effect.dispose());
         this.effects = [];
     }

@@ -5,18 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Vetřelčí stanice – low-poly 3D FPS na palubě ORION-9.">
   <title>{{ app_name }}</title>
-  <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='css/game.css') }}">
-  <script src="{{ url_for('static', path='libs/htmx.min.js') }}" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/app.css') }}?v={{ app_version }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/game.css') }}?v={{ app_version }}">
+  <script src="{{ url_for('static', path='libs/htmx.min.js') }}?v={{ app_version }}" defer></script>
   <script type="importmap">
     {
       "imports": {
-        "three": "{{ url_for('static', path='libs/three.module.js') }}",
+        "three": "{{ url_for('static', path='libs/three.module.js') }}?v={{ app_version }}",
         "three/addons/": "{{ url_for('static', path='libs/addons/') }}"
       }
     }
   </script>
-  <script type="module" src="{{ url_for('static', path='js/main.js') }}"></script>
+  <script type="module" src="{{ url_for('static', path='js/main.js') }}?v={{ app_version }}"></script>
 </head>
 <body>
   <header class="app-header">
@@ -46,13 +46,13 @@
           <div class="mission-brief">
             <h3>Rozkaz: vyčistit ORION-9</h3>
             <p>Devět sektorů. Devět bossů. Jedna cesta ven.</p>
-            <ul>
-              <li>WASD / šipky – pohyb</li>
-              <li>Myš – rozhlížení</li>
-              <li>Levé tlačítko – palba</li>
-              <li>1 / 2 / 3 nebo kolečko – zbraně</li>
-              <li>E – interakce · T – položit věžičku</li>
-              <li>Esc – pauza</li>
+            <ul class="control-list">
+              <li><kbd>WASD</kbd> / šipky – pohyb</li>
+              <li><kbd>Myš</kbd> – rozhlížení</li>
+              <li><kbd>LMB</kbd> – palba</li>
+              <li><kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd> nebo kolečko – zbraně</li>
+              <li><kbd>E</kbd> – interakce · <kbd>T</kbd> – věžička</li>
+              <li><kbd>Esc</kbd> – pauza</li>
             </ul>
             <div class="quality-control">
               <label for="quality-toggle">Kvalita zobrazení</label>

@@ -247,12 +247,18 @@ export class TurretSystem {
         const forward = new THREE.Vector3(0, 0, -1)
             .applyQuaternion(player.camera.quaternion);
         forward.y = 0;
+        if (forward.lengthSq() < 1e-6) forward.set(0, 0, -1);
         forward.normalize();
-        const position = player.camera.position.clone().addScaledVector(
-            forward,
-            FEATURES.turret.placementDistance,
+        const candidates = [1, 0.75, 0.5, 1.25, 1.5].map((scale) => (
+            player.camera.position.clone().addScaledVector(
+                forward,
+                FEATURES.turret.placementDistance * scale,
+            )
+        ));
+        const position = candidates.find(
+            (candidate) => !isInsideAnyCollider(candidate, 0.6, this.world.colliders),
         );
-        if (isInsideAnyCollider(position, 0.6, this.world.colliders)) return false;
+        if (!position) return false;
         const group = this._createModel();
         group.position.set(position.x, 0, position.z);
         this.scene.add(group);

@@ -203,6 +203,81 @@ test("weapon pickups, ammo and explosive barrels", async ({ page }) => {
     )).toBe(true);
 });
 
+test("real keyboard input moves player in ring and module", async ({ page }) => {
+    test.setTimeout(60_000);
+    await openTestGame(page);
+    const startBlocked = await page.evaluate(() => window.__game.isPlayerStartBlocked());
+    expect(startBlocked).toBe(false);
+
+    const moveWithKey = async (code) => {
+        const before = await page.evaluate(() => window.__game.getPlayerPos());
+        await page.keyboard.down(code);
+        await page.waitForTimeout(220);
+        await page.keyboard.up(code);
+        await page.waitForTimeout(50);
+        const after = await page.evaluate(() => window.__game.getPlayerPos());
+        const distance = Math.hypot(after.x - before.x, after.z - before.z);
+        expect(distance, `expected movement for ${code}`).toBeGreaterThan(0.35);
+        return after;
+    };
+
+    await moveWithKey("KeyW");
+    await moveWithKey("KeyS");
+    await moveWithKey("KeyA");
+    await moveWithKey("KeyD");
+
+    const modulePos = await page.evaluate(() => {
+        const start = window.__game.getPlayerStart();
+        const angle = Math.atan2(start.x, start.z) + Math.PI;
+        const r = 20 + 7 + 6;
+        return { x: Math.sin(angle) * r, z: Math.cos(angle) * r };
+    });
+    await page.evaluate(({ x, z }) => window.__game.setPlayerPos(x, z), modulePos);
+    await moveWithKey("KeyW");
+});
+
+test("floor integrity has no holes on all nine levels", async ({ page }) => {
+    test.setTimeout(120_000);
+    await openTestGame(page);
+    const levelCount = await page.evaluate(() => window.__game.getLevelCount());
+    for (let level = 1; level <= levelCount; level += 1) {
+        await page.evaluate((number) => window.__game.skipToLevel(number), level);
+        const result = await page.evaluate(() => window.__game.checkFloorIntegrity({
+            step: 1.1,
+            margin: 0.35,
+        }));
+        expect(result.samples, `level ${level} samples`).toBeGreaterThan(60);
+        expect(result.holes, `level ${level} holes`).toEqual([]);
+        expect(await page.evaluate(() => window.__game.isPlayerStartBlocked())).toBe(false);
+    }
+});
+
+test("sustained shooting reuses pooled projectiles with zero frame allocations", async ({ page }) => {
+    test.setTimeout(60_000);
+    await openTestGame(page);
+    // Prefill pools and let projectiles expire before measuring.
+    await page.evaluate(() => {
+        for (let index = 0; index < 24; index += 1) {
+            window.__game.shoot(index * 0.05);
+        }
+    });
+    await page.waitForTimeout(2200);
+    await page.evaluate(() => window.__game.resetFrameAllocations());
+    const allocationSamples = await page.evaluate(async () => {
+        const samples = [];
+        for (let index = 0; index < 16; index += 1) {
+            window.__game.resetFrameAllocations();
+            window.__game.shoot(performance.now() / 1000 + index * 0.25);
+            await new Promise((resolve) => window.requestAnimationFrame(resolve));
+            await new Promise((resolve) => window.requestAnimationFrame(resolve));
+            samples.push(window.__game.getFrameAllocations());
+        }
+        return samples;
+    });
+    const warmSamples = allocationSamples.slice(2);
+    expect(Math.max(...warmSamples)).toBe(0);
+});
+
 test("airlock, oxygen, turret and survivors", async ({ page }) => {
     test.setTimeout(90_000);
     await openTestGame(page);
@@ -227,6 +302,10 @@ test("airlock, oxygen, turret and survivors", async ({ page }) => {
         .find((pickup) => pickup.kind === "turret"));
     await page.evaluate(({ x, z }) => window.__game.setPlayerPos(x, z), turretPickup.position);
     await expect.poll(() => page.evaluate(() => window.__game.getState().turretKits)).toBe(1);
+    await page.evaluate(() => {
+        const start = window.__game.getPlayerStart();
+        window.__game.setPlayerPos(start.x, start.z);
+    });
     await page.evaluate(() => window.__game.placeTurret());
     expect(await page.evaluate(() => window.__game.getState().turretActive)).toBe(true);
 
