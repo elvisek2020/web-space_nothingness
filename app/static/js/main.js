@@ -199,9 +199,10 @@ function setupLevel(index, freshRun = false, spawnEnemies = !TEST_MODE) {
         gameOverReason = "ORION-9 zůstává v karanténě.";
         player.reset(world.playerStart, world.colliders, world.bounds, 0);
         player.layoutGraph = world.layoutGraph || null;
+        player.segmentParts = world.segmentParts || null;
         hud.reset();
     } else {
-        player.setWorld(world.playerStart, world.colliders, world.bounds, world.layoutGraph || null);
+        player.setWorld(world.playerStart, world.colliders, world.bounds, world.layoutGraph || null, world.segmentParts || null);
         player.active = true;
     }
     hud.setLevel(config.number, config.name);

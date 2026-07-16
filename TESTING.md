@@ -25,6 +25,11 @@ režim `?test=1`. Testovací API `window.__game` bez tohoto parametru neexistuje
 Composer je v testovacím režimu záměrně vypnutý a vizuály používají levnější
 profil; gameplay a kolize se nemění.
 
+Nové regresní testy (v5):
+- Unit `station-segment`: AABB pohyb v rovnému i 45° segmentu
+- Unit `station-layout`: 8segmentový oktagon, validate/BFS, floor/wall
+- E2E: floor/wall integrity, ring→module, boss arena, spawn multi-seed (stejné API jako v4.2)
+
 Nové regresní testy (v4.2):
 - Unit `station-layout`: `validate()` + BFS start→každý modul na 9 levelech
 - E2E průchod ring→tunnel→module a zpět (`isInsideModule`) na všech modulech

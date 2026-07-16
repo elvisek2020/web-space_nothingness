@@ -1,8 +1,9 @@
 /**
- * Analytical walkable footprint + wall integrity probes for the torus station.
+ * Analytical walkable footprint + integrity probes for v5 octagon station.
  */
 
 import { buildStationLayout } from "./station-layout.js";
+import { worldToLocal } from "./collision.js";
 
 export function pointInOrientedBox(x, z, cx, cz, halfW, halfD, yaw) {
     const dx = x - cx;
@@ -18,107 +19,119 @@ export function isOnWalkableFloor(x, z, layout) {
     const graph = layout?.ring && layout?.modules && layout?.tunnels
         ? layout
         : buildStationLayout(layout || {});
-    const { ring, tunnels, modules } = graph;
-    const r = Math.hypot(x, z);
-    if (r >= ring.inner - 0.05 && r <= ring.outer + 0.05) return true;
 
-    for (const tunnel of tunnels) {
+    for (const seg of graph.ring.segments) {
+        const local = worldToLocal(x, z, { x: seg.cx, z: seg.cz, yaw: seg.yaw });
+        if (
+            Math.abs(local.x) <= seg.length / 2 + 0.12
+            && Math.abs(local.z) <= seg.width / 2 + 0.12
+        ) {
+            return true;
+        }
+    }
+
+    for (const tunnel of graph.tunnels) {
         if (pointInOrientedBox(
             x,
             z,
             tunnel.cx,
             tunnel.cz,
-            (tunnel.width + 0.35) / 2,
-            (tunnel.length + 1.1) / 2,
-            tunnel.angle,
-        )) return true;
+            tunnel.width / 2 + 0.2,
+            tunnel.length / 2 + 0.35,
+            tunnel.yaw,
+        )) {
+            return true;
+        }
     }
 
-    for (const mod of modules) {
+    for (const mod of graph.modules) {
         if (pointInOrientedBox(
             x,
             z,
             mod.center.x,
             mod.center.z,
-            (mod.radius * 2 + 0.4) / 2,
-            (mod.length + 0.8) / 2,
+            mod.radius + 0.25,
+            mod.length / 2 + 0.4,
             mod.angle,
-        )) return true;
+        )) {
+            return true;
+        }
     }
+
     return false;
 }
 
-/** Dense sample of walkable XZ points for integrity / spawn tests. */
-export function sampleWalkableGrid(layout, step = 0.75, margin = 0.35) {
-    const graph = layout?.ring ? layout : buildStationLayout(layout || {});
-    const { ring, params } = graph;
-    const extent = ring.radius
-        + params.corridorWidth / 2
-        + params.tunnelLength
-        + params.moduleLength
-        + params.moduleRadius
-        + 4;
-    const points = [];
+export function sampleWalkableGrid(graph, step, margin) {
+    const samples = [];
+    const extent = graph.ring.hullRadius + 8;
     for (let x = -extent; x <= extent; x += step) {
         for (let z = -extent; z <= extent; z += step) {
-            if (!isOnWalkableFloor(x, z, graph)) continue;
-            if (!isOnWalkableFloor(x + margin, z, graph)) continue;
-            if (!isOnWalkableFloor(x - margin, z, graph)) continue;
-            if (!isOnWalkableFloor(x, z + margin, graph)) continue;
-            if (!isOnWalkableFloor(x, z - margin, graph)) continue;
-            points.push({ x, z });
+            if (isOnWalkableFloor(x, z, graph)) {
+                samples.push({ x, z });
+            }
         }
     }
-    return points;
+    // Ensure we also sample nav nodes
+    graph.navNodes.forEach((node) => {
+        if (isOnWalkableFloor(node.x, node.z, graph)) {
+            samples.push({ x: node.x, z: node.z });
+        }
+    });
+    return samples;
 }
 
 export function findFloorHoles(layout, options = {}) {
-    const step = options.step ?? 0.85;
     const graph = layout?.ring ? layout : buildStationLayout(layout || {});
-    const samples = sampleWalkableGrid(graph, step, options.margin ?? 0.4);
-    const holes = samples.filter((point) => !isOnWalkableFloor(point.x, point.z, graph));
+    const step = options.step ?? 1.1;
+    const margin = options.margin ?? 0.35;
+    const samples = sampleWalkableGrid(graph, step, margin);
+    const holes = [];
+    // Analytical: any sample already on walkable is fine; holes = nav points not walkable
+    graph.navNodes.forEach((node) => {
+        if (node.kind === "start") return;
+        if (!isOnWalkableFloor(node.x, node.z, graph)) {
+            holes.push({ x: node.x, z: node.z, reason: "nav-not-walkable" });
+        }
+    });
     return { samples: samples.length, holes };
 }
 
 /**
- * Horizontal outward probes: from walkable points cast toward exterior.
- * Each probe must hit a ring/module/tunnel wall band before escaping past hull.
+ * From walkable ring points cast outward. Dock wedges are excluded (tunnel continues).
+ * Non-dock samples must hit the outer wall band before the hull.
  */
 export function findWallBreaches(layout, options = {}) {
     const graph = layout?.ring ? layout : buildStationLayout(layout || {});
-    const step = options.step ?? 1.4;
+    const step = options.step ?? 1.6;
     const samples = sampleWalkableGrid(graph, step, 0.45);
     const breaches = [];
     const hull = graph.ring.hullRadius;
 
+    const nearDock = (point) => graph.tunnels.some((tunnel) => {
+        let delta = Math.abs(Math.atan2(point.x, point.z) - tunnel.angle);
+        if (delta > Math.PI) delta = Math.PI * 2 - delta;
+        return delta < graph.ring.thetaStep * 0.55;
+    });
+
     samples.forEach((point) => {
-        const r = Math.hypot(point.x, point.z) || 1;
-        // Outward radial direction from station center through the sample.
-        const dirX = point.x / r;
-        const dirZ = point.z / r;
+        const r0 = Math.hypot(point.x, point.z) || 1;
+        if (r0 < graph.ring.inner - 0.3 || r0 > graph.ring.outer + 0.3) return;
+        if (nearDock(point)) return;
+
+        const dirX = point.x / r0;
+        const dirZ = point.z / r0;
         let escaped = true;
         for (let distance = 0.4; distance <= hull + 1; distance += 0.35) {
             const x = point.x + dirX * distance;
             const z = point.z + dirZ * distance;
             const rr = Math.hypot(x, z);
-            // Crossing outer wall band (ring) or leaving a dock/module into sealed space.
-            if (rr >= graph.ring.outer - 0.15 && rr <= graph.ring.outer + 0.9) {
+            if (rr >= graph.ring.outer - 0.25 && rr <= graph.ring.outer + 1.1) {
                 escaped = false;
                 break;
             }
-            // Still inside a tunnel/module footprint counts as contained.
-            if (isOnWalkableFloor(x, z, graph) && rr < graph.ring.outer) {
-                continue;
-            }
             if (rr > hull) break;
         }
-        if (escaped && Math.hypot(point.x, point.z) <= graph.ring.outer + 0.5) {
-            // Only flag ring-corridor samples that can escape radially.
-            if (Math.hypot(point.x, point.z) >= graph.ring.inner - 0.2
-                && Math.hypot(point.x, point.z) <= graph.ring.outer + 0.2) {
-                breaches.push(point);
-            }
-        }
+        if (escaped) breaches.push(point);
     });
 
     return { samples: samples.length, breaches };

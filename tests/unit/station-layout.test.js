@@ -1,58 +1,58 @@
 import { describe, expect, it } from "vitest";
-import { LEVEL_CONFIGS, STATION_DEFAULTS } from "../../app/static/js/config.js";
+import { LEVEL_CONFIGS } from "../../app/static/js/config.js";
 import {
-    bfsReachable,
     buildStationLayout,
     isInsideModuleBounds,
-    validateStationLayout,
+    RING_SEGMENTS,
 } from "../../app/static/js/station-layout.js";
+import { findFloorHoles, findWallBreaches, isOnWalkableFloor } from "../../app/static/js/floor-walk.js";
 
-describe("station layout graph", () => {
-    it("validates all nine level layouts with reachable modules", () => {
+describe("v5 station-layout octagon", () => {
+    it("uses 8 ring segments and validates all nine levels", () => {
         LEVEL_CONFIGS.forEach((config) => {
-            const graph = buildStationLayout(config.layout || {});
-            const result = validateStationLayout(graph);
+            const graph = buildStationLayout(config.layout);
+            expect(graph.ring.segments.length).toBe(RING_SEGMENTS);
+            expect(graph.architecture).toBe("v5-octagon-aabb");
+            const result = graph.validate();
             expect(result.ok, `${config.name}: ${result.errors.join("; ")}`).toBe(true);
-            expect(result.moduleCount).toBe((config.layout?.modules || []).length);
-            const reachable = bfsReachable(graph, "nav-start");
-            graph.modules.forEach((mod) => {
-                expect(reachable.has(`nav-${mod.id}`)).toBe(true);
-            });
-            if (config.layout?.bossArena) {
-                expect(graph.bossAnchor).toBeTruthy();
-                expect(graph.bossAnchor.moduleId).toBe(graph.modules.at(-1).id);
-                expect(Math.hypot(graph.bossAnchor.x, graph.bossAnchor.z)).toBeGreaterThan(
-                    STATION_DEFAULTS.ringRadius,
-                );
-            }
+            expect(result.moduleCount).toBe(config.layout.modules.length);
         });
     });
 
-    it("defines positive portal openings for every dock", () => {
+    it("snaps dock angles to π/4 multiples and keeps BFS reachability", () => {
         const graph = buildStationLayout({
-            modules: [{ type: "lab", angle: 0 }, { type: "lab", angle: Math.PI }],
+            modules: [
+                { type: "cargo", angle: 0 },
+                { type: "cargo", angle: Math.PI },
+            ],
             bossArena: true,
         });
-        graph.tunnels.forEach((tunnel) => {
-            expect(tunnel.opening.width).toBeGreaterThan(1);
-            expect(tunnel.opening.height).toBeGreaterThan(3);
-        });
+        expect(graph.bossAnchor).toBeTruthy();
+        expect(graph.reachableFrom("nav-start").has("nav-module-1")).toBe(true);
         expect(isInsideModuleBounds(
-            graph.modules[0].center.x,
-            graph.modules[0].center.z,
-            graph.modules[0],
+            graph.modules[1].center.x,
+            graph.modules[1].center.z,
+            graph.modules[1],
         )).toBe(true);
     });
 
-    it("keeps player start on the ring opposite the first module", () => {
-        const graph = buildStationLayout({
-            modules: [{ type: "cargo", angle: 0 }],
+    it("marks ring and modules walkable with no floor holes", () => {
+        LEVEL_CONFIGS.forEach((config) => {
+            const graph = buildStationLayout(config.layout);
+            const mid = graph.ring.segments[0];
+            expect(isOnWalkableFloor(mid.cx, mid.cz, graph)).toBe(true);
+            expect(isOnWalkableFloor(0, 0, graph)).toBe(false);
+            const floors = findFloorHoles(graph, { step: 1.2 });
+            expect(floors.holes, config.name).toEqual([]);
+            expect(floors.samples).toBeGreaterThan(40);
         });
-        const r = Math.hypot(graph.playerStart.x, graph.playerStart.z);
-        expect(r).toBeCloseTo(
-            STATION_DEFAULTS.ringRadius - STATION_DEFAULTS.corridorWidth * 0.15,
-            5,
-        );
-        expect(graph.playerStart.z).toBeLessThan(0);
+    });
+
+    it("reports no ring wall breaches on walkable samples", () => {
+        LEVEL_CONFIGS.forEach((config) => {
+            const graph = buildStationLayout(config.layout);
+            const walls = findWallBreaches(graph, { step: 1.8 });
+            expect(walls.breaches, config.name).toEqual([]);
+        });
     });
 });

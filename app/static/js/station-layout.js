@@ -1,13 +1,14 @@
 /**
- * Single source of truth for station geometry and navigation.
- * LevelBuilder, floor-walk, spawns and boss anchors all consume this graph.
+ * v5 station layout — octagonal ring (8 AABB segments), docks, modules, nav graph.
+ * Single source of truth for geometry, navigation, and boss anchors.
  */
 
-import { GAME_CONFIG, STATION_DEFAULTS } from "./config.js";
+import { GAME_CONFIG, MIN_CEILING, STATION_DEFAULTS } from "./config.js";
 
 const OPENING_WIDTH_RATIO = 0.72;
 const OPENING_HEIGHT_RATIO = 0.78;
 const HULL_OFFSET = 2.5;
+const RING_SEGMENTS = 8;
 
 function pointAt(angle, radius) {
     return {
@@ -22,17 +23,24 @@ function dist2(a, b) {
     return dx * dx + dz * dz;
 }
 
+function snapAngleToOctant(angle) {
+    const step = Math.PI / 4;
+    return Math.round(angle / step) * step;
+}
+
 /**
  * @param {object} levelLayout - config.layout from LEVEL_CONFIGS
- * @returns {object} station layout graph
  */
 export function buildStationLayout(levelLayout = {}) {
-    const params = { ...STATION_DEFAULTS, ...levelLayout };
+    const params = {
+        ...STATION_DEFAULTS,
+        ...levelLayout,
+        ringSegments: RING_SEGMENTS,
+    };
     const modulesSpec = levelLayout.modules || [];
     const {
         ringRadius,
         corridorWidth,
-        ringSegments,
         tunnelLength,
         tunnelWidth,
         moduleLength,
@@ -40,56 +48,73 @@ export function buildStationLayout(levelLayout = {}) {
         partitionDepth,
     } = params;
 
+    const thetaStep = (Math.PI * 2) / RING_SEGMENTS;
+    // Chord length of regular octagon with apothem ringRadius.
+    const segmentLength = 2 * ringRadius * Math.tan(Math.PI / RING_SEGMENTS);
+    const openingWidth = tunnelWidth * OPENING_WIDTH_RATIO;
+    const openingHeight = MIN_CEILING * OPENING_HEIGHT_RATIO;
     const inner = ringRadius - corridorWidth / 2;
     const outer = ringRadius + corridorWidth / 2;
-    const thetaStep = (Math.PI * 2) / ringSegments;
-    const arcLen = (Math.PI * 2 * ringRadius) / ringSegments;
-    const openingWidth = tunnelWidth * OPENING_WIDTH_RATIO;
-    const openingHeight = MIN_CEILING_SAFE() * OPENING_HEIGHT_RATIO;
+
+    const dockAngles = new Set(
+        modulesSpec.map((spec) => snapAngleToOctant(spec.angle ?? 0)),
+    );
 
     const segments = [];
-    for (let index = 0; index < ringSegments; index += 1) {
-        const thetaStart = index * thetaStep;
-        const midAngle = thetaStart + thetaStep / 2;
+    for (let index = 0; index < RING_SEGMENTS; index += 1) {
+        const midAngle = index * thetaStep;
         const mid = pointAt(midAngle, ringRadius);
+        const docked = [...dockAngles].some((angle) => {
+            let delta = Math.abs(angle - midAngle);
+            if (delta > Math.PI) delta = Math.PI * 2 - delta;
+            return delta < 0.01;
+        });
         segments.push({
             id: `ring-seg-${index}`,
+            kind: "ring",
             index,
-            thetaStart,
-            thetaLength: thetaStep,
             midAngle,
-            midX: mid.x,
-            midZ: mid.z,
-            arcLen,
-            hasWindow: index % 3 === 1,
+            yaw: midAngle,
+            cx: mid.x,
+            cz: mid.z,
+            length: segmentLength,
+            width: corridorWidth,
+            openEnds: true,
+            openOuter: docked,
+            openingWidth: docked ? openingWidth : 0,
+            hasWindow: index % 2 === 1 && !docked,
         });
     }
 
     const tunnels = [];
     const modules = [];
     modulesSpec.forEach((spec, index) => {
-        const angle = spec.angle ?? 0;
-        const startR = ringRadius + corridorWidth / 2 - 0.5;
+        const angle = snapAngleToOctant(spec.angle ?? 0);
+        const startR = outer - 0.15;
         const endR = startR + tunnelLength;
         const midR = (startR + endR) / 2;
         const tunnelMid = pointAt(angle, midR);
         const portalR = startR + partitionDepth;
         const portal = pointAt(angle, portalR);
-        const centerR = ringRadius + tunnelLength + moduleLength / 2 + 1;
+        const centerR = outer + tunnelLength + moduleLength / 2 + 0.5;
         const center = pointAt(angle, centerR);
         const isBoss = Boolean(levelLayout.bossArena) && index === modulesSpec.length - 1;
 
         const tunnel = {
             id: `tunnel-${index}`,
+            kind: "tunnel",
             moduleId: `module-${index}`,
             angle,
+            yaw: angle,
+            cx: tunnelMid.x,
+            cz: tunnelMid.z,
+            length: tunnelLength,
+            width: tunnelWidth,
             startR,
             endR,
             midR,
-            width: tunnelWidth,
-            length: tunnelLength,
-            cx: tunnelMid.x,
-            cz: tunnelMid.z,
+            openEnds: true,
+            openOuter: false,
             opening: {
                 x: portal.x,
                 z: portal.z,
@@ -104,20 +129,29 @@ export function buildStationLayout(levelLayout = {}) {
 
         modules.push({
             id: `module-${index}`,
+            kind: "module",
             type: spec.type || "cargo",
             angle,
+            yaw: angle,
+            cx: center.x,
+            cz: center.z,
             center: { x: center.x, y: GAME_CONFIG.player.height, z: center.z },
             centerR,
             length: moduleLength,
+            width: moduleRadius * 2,
             radius: moduleRadius,
             portal: tunnel.opening,
             tunnelId: tunnel.id,
             isBoss,
+            openEnds: false,
+            openOuter: false,
+            // Entry face toward tunnel: open the "inner" end (local -Z toward ring)
+            openInnerEnd: true,
         });
     });
 
-    const startAngle = (modulesSpec[0]?.angle ?? 0) + Math.PI;
-    const startR = ringRadius - corridorWidth * 0.15;
+    const startAngle = (modulesSpec[0] ? snapAngleToOctant(modulesSpec[0].angle ?? 0) : 0) + Math.PI;
+    const startR = ringRadius - corridorWidth * 0.1;
     const playerStart = {
         x: Math.sin(startAngle) * startR,
         y: GAME_CONFIG.player.height,
@@ -130,7 +164,7 @@ export function buildStationLayout(levelLayout = {}) {
     };
 
     segments.forEach((seg) => {
-        pushNode(`nav-ring-${seg.index}`, "ring", seg.midX, seg.midZ, { segmentId: seg.id });
+        pushNode(`nav-ring-${seg.index}`, "ring", seg.cx, seg.cz, { segmentId: seg.id });
     });
     pushNode("nav-start", "start", playerStart.x, playerStart.z);
 
@@ -139,13 +173,10 @@ export function buildStationLayout(levelLayout = {}) {
             tunnelId: tunnel.id,
             moduleId: tunnel.moduleId,
         });
-        pushNode(
-            `nav-${tunnel.id}-portal`,
-            "portal",
-            tunnel.opening.x,
-            tunnel.opening.z,
-            { tunnelId: tunnel.id, moduleId: tunnel.moduleId },
-        );
+        pushNode(`nav-${tunnel.id}-portal`, "portal", tunnel.opening.x, tunnel.opening.z, {
+            tunnelId: tunnel.id,
+            moduleId: tunnel.moduleId,
+        });
     });
 
     modules.forEach((mod) => {
@@ -161,8 +192,8 @@ export function buildStationLayout(levelLayout = {}) {
         navEdges.push([b, a]);
     };
 
-    for (let index = 0; index < segments.length; index += 1) {
-        link(`nav-ring-${index}`, `nav-ring-${(index + 1) % segments.length}`);
+    for (let index = 0; index < RING_SEGMENTS; index += 1) {
+        link(`nav-ring-${index}`, `nav-ring-${(index + 1) % RING_SEGMENTS}`);
     }
     link("nav-start", nearestRingNodeId(navNodes, playerStart));
 
@@ -180,6 +211,7 @@ export function buildStationLayout(levelLayout = {}) {
 
     const graph = {
         params,
+        architecture: "v5-octagon-aabb",
         ring: {
             radius: ringRadius,
             inner,
@@ -187,8 +219,9 @@ export function buildStationLayout(levelLayout = {}) {
             corridorWidth,
             segments,
             thetaStep,
-            arcLen,
+            segmentLength,
             hullRadius: outer + HULL_OFFSET,
+            ringSegments: RING_SEGMENTS,
         },
         tunnels,
         modules,
@@ -206,11 +239,6 @@ export function buildStationLayout(levelLayout = {}) {
     graph.reachableFrom = (nodeId) => bfsReachable(graph, nodeId);
     graph.nearestNavNode = (x, z, filter = null) => nearestNavNode(graph, x, z, filter);
     return Object.freeze(graph);
-}
-
-function MIN_CEILING_SAFE() {
-    // Avoid circular import of MIN_CEILING; keep in sync with config (6.5).
-    return 6.5;
 }
 
 function nearestRingNodeId(navNodes, point) {
@@ -262,16 +290,18 @@ export function bfsReachable(graph, startId) {
 
 export function validateStationLayout(graph) {
     const errors = [];
-    if (!graph.ring.segments.length) errors.push("ring has no segments");
+    if (graph.ring.segments.length !== 8) errors.push("v5 ring must have 8 segments");
     if (graph.ring.outer <= graph.ring.inner) errors.push("invalid ring radii");
-    if (graph.ring.arcLen <= 0) errors.push("non-positive arc length");
+    if (graph.ring.segmentLength <= 0) errors.push("non-positive segment length");
 
     graph.modules.forEach((mod) => {
         if (!mod.portal || mod.portal.width <= 0 || mod.portal.height <= 0) {
             errors.push(`module ${mod.id} missing valid portal opening`);
         }
-        if (mod.length <= 0 || mod.radius <= 0) {
-            errors.push(`module ${mod.id} has non-positive size`);
+        const step = Math.PI / 4;
+        const snapped = Math.round(mod.angle / step) * step;
+        if (Math.abs(mod.angle - snapped) > 1e-6) {
+            errors.push(`module ${mod.id} angle not a multiple of π/4`);
         }
     });
 
@@ -279,24 +309,19 @@ export function validateStationLayout(graph) {
         if (tunnel.length <= 0 || tunnel.width <= 0) {
             errors.push(`tunnel ${tunnel.id} has non-positive size`);
         }
-        if (tunnel.opening.width <= 0) {
-            errors.push(`tunnel ${tunnel.id} opening width invalid`);
-        }
     });
 
-    const reachable = bfsReachable(graph, "nav-start");
+    const startId = "nav-start";
+    const reachable = bfsReachable(graph, startId);
     graph.modules.forEach((mod) => {
         if (!reachable.has(`nav-${mod.id}`)) {
             errors.push(`module ${mod.id} not reachable from player start`);
         }
     });
 
-    if (graph.hasBossArena && !graph.bossAnchor) {
-        errors.push("bossArena requested but no bossAnchor module");
-    }
-    if (graph.bossAnchor) {
-        const bossNode = `nav-${graph.bossAnchor.moduleId}`;
-        if (!reachable.has(bossNode)) {
+    if (graph.hasBossArena) {
+        if (!graph.bossAnchor) errors.push("bossArena requested but no bossAnchor module");
+        else if (!reachable.has(`nav-${graph.bossAnchor.moduleId}`)) {
             errors.push("bossAnchor not reachable from player start");
         }
     }
@@ -319,4 +344,4 @@ export function isInsideModuleBounds(x, z, mod) {
     return Math.abs(localX) <= mod.radius + 0.2 && Math.abs(localZ) <= mod.length / 2 + 0.4;
 }
 
-export { HULL_OFFSET, OPENING_WIDTH_RATIO, OPENING_HEIGHT_RATIO };
+export { HULL_OFFSET, OPENING_WIDTH_RATIO, OPENING_HEIGHT_RATIO, RING_SEGMENTS };

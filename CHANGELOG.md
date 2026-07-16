@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## v5 — rebuild stanice od nuly (AABB osmiúhelník)
+
+### Co bylo zahozeno
+- Torusový generátor s rotovanými OBB segmenty (`_buildTorusRing`, cylindrické doky) z v4–v4.2.
+- Ad-hoc švy/dock special-cases, které papírovaly rozjezd geometrie a navigace.
+
+### Nová architektura
+- **Osmiúhelníkový prstenec (8 úseků, úhly × π/4)** — vizuál může být otočený, **gameplay kolize v lokálním AABB** každého segmentu (`station-segment.js` + `moveWithSegmentSubsteps`).
+- **Jedna funkce** `buildSegmentGeometryAndColliders` generuje mesh i lokální kollidéry ze stejných rozměrů.
+- **`stationLayout` SSOT** — segmenty, tunely, moduly, openings, navNodes/BFS, bossAnchor.
+- World OBB emit jen pro LOS/perception; pohyb/spawn používá lokální AABB + props.
+
+### Ověření po krocích
+- **Krok 1–2:** unit `station-segment` — rovný i 45° segment; únik stěnami zablokován.
+- **Krok 3:** 8segmentový prstenec; floor/wall integrity unit + E2E na 9 levelech.
+- **Krok 4–5:** E2E průchod ring→každý modul a zpět; layout validate/BFS.
+- **Krok 6–7:** spawn multi-seed bez `insideCollider`; boss po clear na dosažitelné aréně + HUD; všechny levely s úhly × π/4.
+- **Krok 8:** `scripts/test-all.sh` zelený.
+
+### Proč se to neopakuje
+- Žádná ad-hoc torus matematika v generátoru; jedna builder funkce = mesh + lokální AABB.
+- Navigace a spawny z téhož `stationLayout`, ne z oddělených `floorPoints`.
+- Diagonální úseky se neřeší tlustým world AABB (blokovalo by chodbu), ale inverzní transformací do lokálního AABB.
+
 ## v4.2 — hotfix layout grafu (kořenová příčina v4.1 symptomů)
 
 ### Diagnóza (ne symptomy)

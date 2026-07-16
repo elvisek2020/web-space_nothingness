@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { GAME_CONFIG, VISUALS, WEAPONS } from "./config.js";
-import { gameplayColliders, isInsideAnyCollider, moveWithSubsteps } from "./collision.js";
+import { gameplayColliders, isInsideAnyCollider, isInsideSegmentParts, moveWithSegmentSubsteps, moveWithSubsteps } from "./collision.js";
 import { isOnWalkableFloor } from "./floor-walk.js";
 import {
     createGlowSprite,
@@ -229,11 +229,12 @@ export class Player {
         this._notifyWeapon();
     }
 
-    setWorld(position, colliders, bounds, layoutGraph = null) {
+    setWorld(position, colliders, bounds, layoutGraph = null, segmentParts = null) {
         this.camera.position.copy(position);
         this.colliders = colliders;
         this.bounds = bounds;
         this.layoutGraph = layoutGraph;
+        this.segmentParts = segmentParts;
         this.clearProjectiles();
     }
 
@@ -384,14 +385,33 @@ export class Player {
 
     moveBy(x, z) {
         const solid = gameplayColliders(this.colliders);
-        const resolved = moveWithSubsteps(
-            { x: this.camera.position.x, z: this.camera.position.z },
-            { x, z },
-            GAME_CONFIG.player.radius,
-            solid,
-            this.bounds,
-            GAME_CONFIG.world.collisionSubstep,
-        );
+        const parts = this.segmentParts || [];
+        const resolved = parts.length
+            ? moveWithSegmentSubsteps(
+                { x: this.camera.position.x, z: this.camera.position.z },
+                { x, z },
+                GAME_CONFIG.player.radius,
+                parts,
+                solid.filter((c) => c.type !== "seg-inner"
+                    && c.type !== "seg-outer"
+                    && c.type !== "seg-outer-jamb"
+                    && c.type !== "seg-side"
+                    && c.type !== "seg-end"
+                    && c.type !== "seg-end-outer"
+                    && c.type !== "seg-end-inner"
+                    && c.type !== "seg-jamb"
+                    && !String(c.type).startsWith("seg-")),
+                this.bounds,
+                GAME_CONFIG.world.collisionSubstep,
+            )
+            : moveWithSubsteps(
+                { x: this.camera.position.x, z: this.camera.position.z },
+                { x, z },
+                GAME_CONFIG.player.radius,
+                solid,
+                this.bounds,
+                GAME_CONFIG.world.collisionSubstep,
+            );
         const hulls = this.colliders.filter((collider) => collider.type === "hull-shell");
         const onHull = hulls.length > 0 && isInsideAnyCollider(
             resolved,
@@ -417,6 +437,15 @@ export class Player {
     }
 
     _blocked(x, z, radius) {
+        const parts = this.segmentParts || [];
+        if (parts.length) {
+            return isInsideSegmentParts(
+                { x, z },
+                radius,
+                parts,
+                gameplayColliders(this.colliders).filter((c) => !String(c.type).startsWith("seg-")),
+            );
+        }
         return isInsideAnyCollider({ x, z }, radius, gameplayColliders(this.colliders));
     }
 

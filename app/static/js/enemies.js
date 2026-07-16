@@ -8,7 +8,7 @@ import {
     SPAWN_SAFE_RADIUS,
     VISUALS,
 } from "./config.js";
-import { gameplayColliders, isInsideAnyCollider, moveWithSubsteps } from "./collision.js";
+import { gameplayColliders, isInsideAnyCollider, isInsideSegmentParts, moveWithSegmentSubsteps, moveWithSubsteps } from "./collision.js";
 import {
     alertEnemiesBySound,
     buildColliderGrid,
@@ -163,7 +163,12 @@ export class EnemyManager {
         }
         const probe = Math.max(0.7, enemy.radius * 0.85);
         const solid = gameplayColliders(this.world.colliders);
-        if (!isInsideAnyCollider(enemy.group.position, probe, solid)) return false;
+        const parts = this.world.segmentParts || [];
+        const props = solid.filter((c) => !String(c.type).startsWith("seg-"));
+        const blocked = (pos, rad) => (parts.length
+            ? isInsideSegmentParts(pos, rad, parts, props)
+            : isInsideAnyCollider(pos, rad, solid));
+        if (!blocked(enemy.group.position, probe)) return false;
         const safe = this._pickSpawnPoint(enemy.definition);
         if (!safe) return false;
         enemy.group.position.x = safe.x;
@@ -171,7 +176,7 @@ export class EnemyManager {
         if (!enemy.definition.ceilingStalker) {
             enemy.group.position.y = enemy.definition.radius * 0.72;
         }
-        if (isInsideAnyCollider(enemy.group.position, probe, solid)) {
+        if (blocked(enemy.group.position, probe)) {
             console.warn("[ORION-9] enemy still inside collider after rescue", enemy.type);
         }
         return true;
@@ -201,10 +206,19 @@ export class EnemyManager {
             const spacingOk = chosen.every(
                 (existing) => Math.hypot(existing.x - point.x, existing.z - point.z) >= 3,
             );
-            const clear = !isInsideAnyCollider(point, 0.85, gameplayColliders(this.world.colliders));
+            const clear = !this._spawnBlocked(point, 0.85);
             if (outsideSafe && spacingOk && clear) chosen.push(point.clone());
         });
         return chosen;
+    }
+
+    _spawnBlocked(point, probe) {
+        const parts = this.world.segmentParts || [];
+        const props = gameplayColliders(this.world.colliders).filter(
+            (c) => !String(c.type).startsWith("seg-"),
+        );
+        if (parts.length) return isInsideSegmentParts(point, probe, parts, props);
+        return isInsideAnyCollider(point, probe, gameplayColliders(this.world.colliders));
     }
 
     _pickSpawnPoint(definition) {
@@ -218,7 +232,7 @@ export class EnemyManager {
             if (!point) break;
             const outsideSafeRadius = !start
                 || Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS;
-            const blocked = isInsideAnyCollider(point, probe, gameplayColliders(this.world.colliders));
+            const blocked = this._spawnBlocked(point, probe);
             if (outsideSafeRadius && !blocked) {
                 return point.clone();
             }
@@ -226,11 +240,7 @@ export class EnemyManager {
         const candidates = points.filter((point) => {
             const outsideSafe = !start
                 || Math.hypot(point.x - start.x, point.z - start.z) >= SPAWN_SAFE_RADIUS;
-            return outsideSafe && !isInsideAnyCollider(
-                point,
-                probe,
-                gameplayColliders(this.world.colliders),
-            );
+            return outsideSafe && !this._spawnBlocked(point, probe);
         });
         if (candidates.length) {
             return candidates.reduce((farthest, point) => (
@@ -595,14 +605,28 @@ export class EnemyManager {
 
     _moveEnemy(enemy, movement) {
         const radius = enemy.radius * 0.75;
-        const next = moveWithSubsteps(
-            { x: enemy.group.position.x, z: enemy.group.position.z },
-            { x: movement.x, z: movement.z },
-            radius,
-            gameplayColliders(this.world.colliders),
-            this.world.bounds,
-            GAME_CONFIG.world.collisionSubstep,
+        const parts = this.world.segmentParts || [];
+        const props = gameplayColliders(this.world.colliders).filter(
+            (c) => !String(c.type).startsWith("seg-"),
         );
+        const next = parts.length
+            ? moveWithSegmentSubsteps(
+                { x: enemy.group.position.x, z: enemy.group.position.z },
+                { x: movement.x, z: movement.z },
+                radius,
+                parts,
+                props,
+                this.world.bounds,
+                GAME_CONFIG.world.collisionSubstep,
+            )
+            : moveWithSubsteps(
+                { x: enemy.group.position.x, z: enemy.group.position.z },
+                { x: movement.x, z: movement.z },
+                radius,
+                gameplayColliders(this.world.colliders),
+                this.world.bounds,
+                GAME_CONFIG.world.collisionSubstep,
+            );
         enemy.group.position.x = next.x;
         enemy.group.position.z = next.z;
     }

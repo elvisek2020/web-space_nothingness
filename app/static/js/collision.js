@@ -134,3 +134,85 @@ export function moveWithSubsteps(
     }
     return result;
 }
+
+/** World → segment local (inverse of Three.js Ry(yaw) around transform origin). */
+export function worldToLocal(wx, wz, transform) {
+    const dx = wx - transform.x;
+    const dz = wz - transform.z;
+    const cos = Math.cos(transform.yaw);
+    const sin = Math.sin(transform.yaw);
+    return {
+        x: dx * cos - dz * sin,
+        z: dx * sin + dz * cos,
+    };
+}
+
+export function localToWorld(lx, lz, transform) {
+    const cos = Math.cos(transform.yaw);
+    const sin = Math.sin(transform.yaw);
+    return {
+        x: transform.x + lx * cos + lz * sin,
+        z: transform.z - lx * sin + lz * cos,
+    };
+}
+
+function isInsideLocalAabbs(lx, lz, radius, localColliders) {
+    return localColliders.some((box) => circleIntersectsAabb(lx, lz, radius, box));
+}
+
+/**
+ * v5 movement: test each segment's local AABB colliders after inverse transform.
+ * Also tests flat world colliders (yaw≈0 props like barrels) if provided.
+ */
+export function isInsideSegmentParts(position, radius, segmentParts, worldColliders = []) {
+    if (worldColliders.length && isInsideAnyCollider(position, radius, worldColliders)) {
+        return true;
+    }
+    return (segmentParts || []).some((part) => {
+        const local = worldToLocal(position.x, position.z, part.transform);
+        return isInsideLocalAabbs(local.x, local.z, radius, part.localColliders);
+    });
+}
+
+export function resolveAxisSeparatedMoveSegments(
+    position,
+    delta,
+    radius,
+    segmentParts,
+    worldColliders,
+    bounds,
+) {
+    const blocked = (pos) => isInsideSegmentParts(pos, radius, segmentParts, worldColliders);
+    const result = { x: position.x, z: position.z };
+    const nextX = { x: result.x + delta.x, z: result.z };
+    if (!blocked(nextX)) result.x = nextX.x;
+    const nextZ = { x: result.x, z: result.z + delta.z };
+    if (!blocked(nextZ)) result.z = nextZ.z;
+    return clampToBounds(result, radius, bounds);
+}
+
+export function moveWithSegmentSubsteps(
+    position,
+    delta,
+    radius,
+    segmentParts,
+    worldColliders,
+    bounds,
+    maxStep = 0.12,
+) {
+    const distance = Math.hypot(delta.x, delta.z);
+    const steps = Math.max(1, Math.ceil(distance / maxStep));
+    const step = { x: delta.x / steps, z: delta.z / steps };
+    let result = { x: position.x, z: position.z };
+    for (let index = 0; index < steps; index += 1) {
+        result = resolveAxisSeparatedMoveSegments(
+            result,
+            step,
+            radius,
+            segmentParts,
+            worldColliders,
+            bounds,
+        );
+    }
+    return result;
+}

@@ -483,7 +483,7 @@ export const LEVEL_CONFIGS = Object.freeze([
         airlock: true,
         oxygenZone: false,
         turretKit: false,
-        layout: { modules: [{ type: "greenhouse", angle: Math.PI / 3 }, { type: "greenhouse", angle: -Math.PI / 3 }], bossArena: false },
+        layout: { modules: [{ type: "greenhouse", angle: Math.PI / 4 }, { type: "greenhouse", angle: -Math.PI / 4 }], bossArena: false },
     },
     {
         number: 5,
@@ -580,7 +580,7 @@ export const LEVEL_CONFIGS = Object.freeze([
 export const STATION_DEFAULTS = Object.freeze({
     ringRadius: 20,
     corridorWidth: 7,
-    ringSegments: 14,
+    ringSegments: 8,
     tunnelLength: 7,
     tunnelWidth: 3.2,
     moduleLength: 12,
